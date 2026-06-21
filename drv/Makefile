@@ -13,6 +13,15 @@ ifneq ($(KERNELRELEASE),)
 	obj-m := ugds_drv.o
 	ugds_drv-objs := pci.o list.o ctrl.o map.o
 
+	# KUnit self-test (opt-in, HIP-only)
+ ifdef BUILD_KUNIT
+  ifndef BUILD_HIP
+  $(error BUILD_KUNIT requires BUILD_HIP=1 — SG flatten tests are HIP-only)
+  endif
+	ugds_drv-objs += test/sg_flatten_test.o
+	ccflags-y += -DUGDS_KUNIT
+ endif
+
 	# AMD HIP path — standard Linux DMA-buf, no external headers needed
  ifdef BUILD_HIP
 	ccflags-y += -D_HIP

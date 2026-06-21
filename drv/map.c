@@ -543,16 +543,84 @@ void release_dmabuf_memory(struct map* map)
 }
 
 
+/*
+ * Flatten an SG table into per-page DMA addresses.
+ * Consumes hsa_offset bytes before extracting addresses.
+ *
+ * Returns 0 on success, -EINVAL if a non-page-granular residual
+ * is encountered before expected_pages are filled.
+ *
+ * If all expected_pages are filled, trailing bytes in the last
+ * SG entry are silently ignored (behavior-preserving).
+ */
+int sg_flatten_to_addrs(struct sg_table* sgt, u64* addrs,
+                        unsigned long expected_pages,
+                        unsigned long ctrl_page_size,
+                        u64 hsa_offset)
+{
+    struct scatterlist* sg;
+    unsigned long page_idx = 0;
+    u64 remaining_offset = hsa_offset;
+    int i;
+
+    for_each_sgtable_dma_sg(sgt, sg, i)
+    {
+        u64 addr = sg_dma_address(sg);
+        unsigned int len = sg_dma_len(sg);
+
+        /* Skip SG entries until we consume the full offset */
+        if (remaining_offset > 0)
+        {
+            if (remaining_offset >= len)
+            {
+                remaining_offset -= len;
+                continue;
+            }
+            addr += remaining_offset;
+            len -= remaining_offset;
+            remaining_offset = 0;
+        }
+
+        while (len >= ctrl_page_size && page_idx < expected_pages)
+        {
+            addrs[page_idx++] = addr;
+            addr += ctrl_page_size;
+            len -= ctrl_page_size;
+        }
+
+        /* Fail on non-page-granular SG residual.
+         * A partial page means the DMA address list would be
+         * shifted or incomplete, leading to data corruption. */
+        if (len > 0 && page_idx < expected_pages)
+        {
+            printk(KERN_ERR "uGDS: SG entry %u has %u non-page-granular "
+                   "residual bytes (page_size=%lu)\n",
+                   i, len, ctrl_page_size);
+            return -EINVAL;
+        }
+
+        if (page_idx >= expected_pages)
+            break;
+    }
+
+    if (page_idx != expected_pages)
+    {
+        printk(KERN_ERR "uGDS: dmabuf page count mismatch: got %lu, expected %lu\n",
+               page_idx, expected_pages);
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+
 static int map_dmabuf_memory(struct map* map, int dmabuf_fd,
                               u64 hsa_offset, unsigned long expected_pages,
                               size_t ioaddrs_capacity)
 {
     struct dmabuf_region* dr;
-    struct scatterlist*   sg;
-    unsigned long page_idx = 0;
     unsigned long ctrl_page_size = PAGE_SIZE;
-    u64 remaining_offset = hsa_offset;
-    int err, i;
+    int err;
 
     if (expected_pages > ioaddrs_capacity)
     {
@@ -637,56 +705,11 @@ static int map_dmabuf_memory(struct map* map, int dmabuf_fd,
     map->data = dr;
     map->release = release_dmabuf_memory;
 
-    /* Flatten sg_table into per-page DMA addresses.
-     * Consume HSA offset across multiple SG entries. */
-    for_each_sgtable_dma_sg(dr->sgt, sg, i)
-    {
-        u64 addr = sg_dma_address(sg);
-        unsigned int len = sg_dma_len(sg);
-
-        /* Skip SG entries until we consume the full offset */
-        if (remaining_offset > 0)
-        {
-            if (remaining_offset >= len)
-            {
-                remaining_offset -= len;
-                continue;
-            }
-            addr += remaining_offset;
-            len -= remaining_offset;
-            remaining_offset = 0;
-        }
-
-        while (len >= ctrl_page_size && page_idx < expected_pages)
-        {
-            map->addrs[page_idx++] = addr;
-            addr += ctrl_page_size;
-            len -= ctrl_page_size;
-        }
-
-        /* Fail on non-page-granular SG residual.
-         * A partial page means the DMA address list would be
-         * shifted or incomplete, leading to data corruption. */
-        if (len > 0 && page_idx < expected_pages)
-        {
-            printk(KERN_ERR "uGDS: SG entry %u has %u non-page-granular "
-                   "residual bytes (page_size=%lu)\n",
-                   i, len, ctrl_page_size);
-            err = -EINVAL;
-            goto fail;
-        }
-
-        if (page_idx >= expected_pages)
-            break;
-    }
-
-    if (page_idx != expected_pages)
-    {
-        printk(KERN_ERR "uGDS: dmabuf page count mismatch: got %lu, expected %lu\n",
-               page_idx, expected_pages);
-        err = -EINVAL;
+    /* Flatten sg_table into per-page DMA addresses via helper. */
+    err = sg_flatten_to_addrs(dr->sgt, map->addrs, expected_pages,
+                              ctrl_page_size, hsa_offset);
+    if (err)
         goto fail;
-    }
 
     return 0;
 

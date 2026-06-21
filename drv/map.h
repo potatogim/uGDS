@@ -84,4 +84,19 @@ struct map* map_dmabuf(struct list* list, const struct ctrl* ctrl,
 struct map* map_find(const struct list* list, u64 vaddr);
 
 
+#ifdef _HIP
+/* Forward declaration — avoids pulling <linux/scatterlist.h> into map.h */
+struct sg_table;
+
+/*
+ * Flatten an SG table into per-page DMA addresses.
+ * Called by map_dmabuf_memory() and KUnit tests.
+ */
+int sg_flatten_to_addrs(struct sg_table* sgt, u64* addrs,
+                        unsigned long expected_pages,
+                        unsigned long ctrl_page_size,
+                        u64 hsa_offset);
+#endif
+
+
 #endif /* __UGDS_DRV_MAP_H__ */
