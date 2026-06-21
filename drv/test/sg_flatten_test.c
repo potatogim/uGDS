@@ -12,9 +12,17 @@
 
 #define PAGE   4096UL
 
+/* Cleanup action to free the sg_table's internal scatterlist */
+static void free_sg_table(void *ctx)
+{
+    struct sg_table *sgt = (struct sg_table *)ctx;
+    sg_free_table(sgt);
+}
+
 /*
  * Build a synthetic sg_table with the given DMA lengths.
  * DMA addresses are sequential starting from 0x10000000.
+ * The internal scatterlist is auto-freed when the test exits.
  */
 static struct sg_table* build_sg_table(struct kunit* test,
                                         const unsigned int* lengths,
@@ -26,6 +34,10 @@ static struct sg_table* build_sg_table(struct kunit* test,
 
     sgt = kunit_kzalloc(test, sizeof(*sgt), GFP_KERNEL);
     KUNIT_ASSERT_EQ(test, sg_alloc_table(sgt, n_entries, GFP_KERNEL), 0);
+
+    /* Register cleanup — sg_free_table frees the internal scatterlist
+     * that sg_alloc_table allocated separately from kunit_kzalloc */
+    kunit_add_action(test, free_sg_table, sgt);
 
     for_each_sg(sgt->sgl, sg, n_entries, i)
     {
