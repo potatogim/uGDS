@@ -96,9 +96,10 @@ struct map* map_find(const struct list* list, u64 vaddr)
         if (map->owner == current)
         {
             /* Match address using the mapping's own page size.
-             * This prevents a 64 KiB-aligned CUDA lookup from
-             * matching a 4 KiB-aligned HIP/dmabuf mapping (and
-             * vice-versa) when both reside in the same region. */
+             * Previously the unconditional GPU_PAGE_MASK (64 KiB)
+             * could cause HIP-vs-HIP false matches when two 4 KiB
+             * mappings resided in the same 64 KiB region. Each
+             * mapping is now matched only by its own page_size. */
             if (map->page_size > 0 &&
                 map->vaddr == (vaddr & ~((u64)map->page_size - 1)))
             {
@@ -663,12 +664,16 @@ static int map_dmabuf_memory(struct map* map, int dmabuf_fd,
             len -= ctrl_page_size;
         }
 
-        /* Warn if this SG entry has a non-page-granular residual. */
+        /* Fail on non-page-granular SG residual.
+         * A partial page means the DMA address list would be
+         * shifted or incomplete, leading to data corruption. */
         if (len > 0 && page_idx < expected_pages)
         {
-            printk(KERN_WARNING "uGDS: SG entry %u has %u residual bytes "
-                   "(page_size=%lu) — DMA address list may be incomplete\n",
+            printk(KERN_ERR "uGDS: SG entry %u has %u non-page-granular "
+                   "residual bytes (page_size=%lu)\n",
                    i, len, ctrl_page_size);
+            err = -EINVAL;
+            goto fail;
         }
 
         if (page_idx >= expected_pages)
