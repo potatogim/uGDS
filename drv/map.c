@@ -612,7 +612,9 @@ int sg_flatten_to_addrs(struct sg_table* sgt, u64* addrs,
 
     return 0;
 }
+#ifdef UGDS_KUNIT
 EXPORT_SYMBOL_GPL(sg_flatten_to_addrs);
+#endif
 
 
 static int map_dmabuf_memory(struct map* map, int dmabuf_fd,

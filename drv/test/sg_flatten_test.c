@@ -36,8 +36,10 @@ static struct sg_table* build_sg_table(struct kunit* test,
     KUNIT_ASSERT_EQ(test, sg_alloc_table(sgt, n_entries, GFP_KERNEL), 0);
 
     /* Register cleanup — sg_free_table frees the internal scatterlist
-     * that sg_alloc_table allocated separately from kunit_kzalloc */
-    kunit_add_action(test, free_sg_table, sgt);
+     * that sg_alloc_table allocated separately from kunit_kzalloc.
+     * Use or_reset variant so the table is freed even if action
+     * registration itself fails. */
+    kunit_add_action_or_reset(test, free_sg_table, sgt);
 
     for_each_sg(sgt->sgl, sg, n_entries, i)
     {
@@ -187,5 +189,5 @@ static struct kunit_suite sg_flatten_test_suite = {
 
 kunit_test_suite(sg_flatten_test_suite);
 
-MODULE_LICENSE("BSD-3-Clause");
+MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("uGDS SG flatten KUnit tests");
