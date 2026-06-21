@@ -11,6 +11,7 @@
 #include "list.h"
 #include <linux/types.h>
 #include <linux/mm_types.h>
+#include <linux/atomic.h>
 
 
 /* Forward declaration */
@@ -35,6 +36,7 @@ struct map
     void*               data;           /* Custom data */
     release             release;        /* Custom callback for unmapping and releasing memory */
     unsigned long       n_addrs;        /* Number of mapped pages */
+    atomic_t            invalid;        /* Set by dmabuf move_notify */
     uint64_t            addrs[1];       /* Bus addresses */
 };
 
@@ -59,6 +61,19 @@ void unmap_and_release(struct map* map);
  * Lock and map GPU device memory.
  */
 struct map* map_device_memory(struct list* list, const struct ctrl* ctrl, u64 vaddr, unsigned long n_pages, struct list* ctrl_list);
+#endif
+
+
+
+#ifdef _HIP
+/*
+ * Map GPU memory via standard Linux DMA-buf framework.
+ * Used by AMD HIP/ROCm backend.
+ */
+struct map* map_dmabuf(struct list* list, const struct ctrl* ctrl,
+                        u64 gpu_ptr, int dmabuf_fd,
+                        u64 dmabuf_offset, unsigned long n_pages,
+                        size_t ioaddrs_capacity);
 #endif
 
 

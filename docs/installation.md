@@ -2,6 +2,8 @@
 
 ## Prerequisites
 
+### NVIDIA CUDA Backend
+
 | Dependency | Version | Notes |
 |-----------|---------|-------|
 | Linux kernel headers | matching running kernel | tested on 6.8 |
@@ -10,9 +12,34 @@
 | CMake | >= 3.18 | |
 | GCC | C++17 support | |
 
+### AMD HIP/ROCm Backend
+
+| Dependency | Version | Notes |
+|-----------|---------|-------|
+| Linux kernel headers | >= 5.12 (6.2+ recommended) | **`CONFIG_PCI_P2PDMA=y` required**, `CONFIG_DMABUF_MOVE_NOTIFY=y` required |
+| ROCm | >= 5.6 (7.0+ recommended) | `hsa_amd_portable_export_dmabuf()` support |
+| HIP runtime | >= 5.6 | `hipMalloc`, `hipMemcpy` |
+| HSA runtime | >= 5.6 | `libhsa-runtime64.so` |
+| GPU | Large BAR | MI300X, MI250 (Full BAR exposes VRAM via PCIe) |
+| CMake | >= 3.18 (CUDA), >= 3.21 (HIP) | |
+| GCC | C++17 support | |
+
+**Kernel requirements (mandatory):**
+- `CONFIG_PCI_P2PDMA=y` — PCIe P2P DMA support (required)
+- `CONFIG_DMABUF_MOVE_NOTIFY=y` — DMA-buf dynamic attach (required)
+- AMD HSA P2P support in kernel (`CONFIG_HSA_AMD_P2P=y`, depends on `HSA_AMD && PCI_P2PDMA && DMABUF_MOVE_NOTIFY`)
+- IOMMU passthrough recommended: `iommu=pt` or `amd_iommu=off`
+
+**Synchronization contract (same as NVIDIA GDS/cuFile):**
+Buffers registered with `uGDSBufRegister()` must not be modified by the GPU (HIP kernel writes) while NVMe I/O is in flight on the same buffer. Concurrent GPU access during DMA can cause data corruption. This mirrors the NVIDIA GDS requirement.
+
+**Important:** The kernel module and userspace library MUST be built with the same backend. A CUDA kernel module (`make` default) with a HIP userspace library (`-DUGDS_BACKEND_HIP=ON`) will fail at `uGDSBufRegister()` time with `UGDS_GPU_MEMORY_PINNING_FAILED`. Verify backend consistency before deploying.
+
 ## Step 1: Build the Kernel Module
 
 The kernel module (`ugds_drv.ko`) provides PCI BAR mapping and GPU page pinning for user-space NVMe access.
+
+### NVIDIA CUDA Backend (default)
 
 ```bash
 cd drv
@@ -28,6 +55,15 @@ If auto-detection fails, specify manually:
 ```bash
 make KERNEL=/path/to/kernel/build NVIDIA_DIR=/usr/src/nvidia-550.54.14
 ```
+
+### AMD HIP/ROCm Backend
+
+```bash
+cd drv
+make BUILD_HIP=1
+```
+
+No NVIDIA driver headers needed — the HIP path uses standard Linux DMA-buf framework. Kernel headers (`/lib/modules/$(uname -r)/build`) are still required.
 
 ## Step 2: Load the Kernel Module
 
@@ -59,9 +95,19 @@ scripts/env_switch.sh status
 
 ## Step 3: Build the Library
 
+### NVIDIA CUDA (default)
+
 ```bash
 mkdir build && cd build
 cmake ..
+make -j$(nproc)
+```
+
+### AMD HIP/ROCm
+
+```bash
+mkdir build && cd build
+cmake .. -DUGDS_BACKEND_CUDA=OFF -DUGDS_BACKEND_HIP=ON
 make -j$(nproc)
 ```
 
@@ -99,7 +145,7 @@ Run the functional test suite:
 ```bash
 for t in build/test_*; do
     echo "=== $(basename $t) ==="
-    $t -f /dev/ugds_drv0 -d 0
+    $t /dev/ugds_drv0 0
 done
 ```
 

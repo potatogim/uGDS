@@ -149,6 +149,24 @@ int nvm_dma_map_host(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* vaddr, si
 
 
 
+#ifdef _HIP
+#include <unistd.h>
+#include <fcntl.h>
+#include <hsa/hsa_ext_amd.h>
+#include <hip/hip_runtime_api.h>
+
+/* Use runtime page size — must match kernel PAGE_SIZE for ioctl contract.
+ * C++11 magic statics guarantee thread-safe initialization. */
+static long hip_page_size()
+{
+    static const long ps = sysconf(_SC_PAGESIZE);
+    return ps;
+}
+
+#define HPS (hip_page_size())
+
+#endif
+
 int nvm_dma_map_device(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devptr, size_t size)
 {
     struct ioctl_mapping* md = NULL;
@@ -159,18 +177,146 @@ int nvm_dma_map_device(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devptr,
         return EBADF;
     }
 
+#ifdef _HIP
+    /* AMD HIP path: validate buffer, export as dma-buf, pass to kernel */
+    int dmabuf_fd = -1;
+    uint64_t dmabuf_offset = 0;
+    int err;
+
+    /* Early validation of size and page size */
+    if (size == 0)
+    {
+        dprintf("nvm_dma_map_device: size must be non-zero\n");
+        return EINVAL;
+    }
+    if (HPS <= 0)
+    {
+        dprintf("nvm_dma_map_device: sysconf(_SC_PAGESIZE) failed\n");
+        return EINVAL;
+    }
+
+    /* Buffer validation (hipFile pattern) */
+    hipPointerAttribute_t attrs;
+    hipError_t hip_err = hipPointerGetAttributes(&attrs, devptr);
+    if (hip_err != hipSuccess || attrs.type != hipMemoryTypeDevice)
+    {
+        dprintf("GPU pointer %p is not device memory\n", devptr);
+        return EIO;
+    }
+
+    hipDeviceptr_t alloc_base;
+    size_t alloc_size;
+    hip_err = hipMemGetAddressRange(&alloc_base, &alloc_size, (hipDeviceptr_t)devptr);
+    if (hip_err != hipSuccess)
+    {
+        dprintf("hipMemGetAddressRange failed for ptr %p\n", devptr);
+        return EIO;
+    }
+    uintptr_t base_addr = (uintptr_t)alloc_base;
+    uintptr_t ptr_addr = (uintptr_t)devptr;
+    size_t offset_in_alloc = ptr_addr - base_addr;
+
+    /* Compute page-aligned size with overflow check */
+    if (size > SIZE_MAX - HPS)
+    {
+        dprintf("Buffer size %zu overflows alignment computation\n", size);
+        return EINVAL;
+    }
+    size_t aligned_size = (size + HPS - 1) & ~(HPS - 1);
+
+    /* Validate aligned size against allocation boundary */
+    if (ptr_addr < base_addr || offset_in_alloc > alloc_size ||
+        aligned_size > alloc_size - offset_in_alloc)
+    {
+        dprintf("Buffer range %p+%zu exceeds allocation %p+%zu\n",
+                devptr, size, (void*)base_addr, alloc_size);
+        return EIO;
+    }
+
+    /* Validate page alignment */
+    if (ptr_addr % HPS != 0)
+    {
+        dprintf("GPU pointer %p is not page-aligned\n", devptr);
+        return EINVAL;
+    }
+
+    /* Export with PCIe P2P mapping type for NVMe-to-GPU peer DMA.
+     * The v2 API with HSA_AMD_DMABUF_MAPPING_TYPE_PCIE is required for
+     * correct NVMe↔GPU direct transfer — it ensures the kernel receives
+     * a PCIe BAR-mapped dmabuf suitable for peer-to-peer DMA.
+     * HAVE_HSA_DMABUF_V2 is set by CMake check_cxx_source_compiles.
+     * Without v2 support, the HIP backend cannot provide PCIe P2P. */
+#ifndef HAVE_HSA_DMABUF_V2
+    dprintf("HIP backend requires hsa_amd_portable_export_dmabuf_v2 support (ROCm >= 5.6). "
+            "Please update ROCm or rebuild with CMake detection enabled.\n");
+    return ENOTSUP;
+#else
+    hsa_status_t status = hsa_amd_portable_export_dmabuf_v2(
+        devptr, aligned_size, &dmabuf_fd, &dmabuf_offset,
+        HSA_AMD_DMABUF_MAPPING_TYPE_PCIE);
+    if (status != HSA_STATUS_SUCCESS || dmabuf_fd < 0)
+    {
+        dprintf("hsa_amd_portable_export_dmabuf_v2() failed: %d\n", status);
+        return EIO;
+    }
+
+    /* Set FD_CLOEXEC to prevent fd leak across exec (kernel dma-buf security recommendation) */
+    int fd_flags = fcntl(dmabuf_fd, F_GETFD);
+    if (fd_flags >= 0)
+        fcntl(dmabuf_fd, F_SETFD, fd_flags | FD_CLOEXEC);
+#endif
+
+    /* Validate offset is page-aligned */
+    if (dmabuf_offset % HPS != 0)
+    {
+        dprintf("HSA dmabuf offset %llu is not page-aligned\n",
+                (unsigned long long)dmabuf_offset);
+        hsa_amd_portable_close_dmabuf(dmabuf_fd);
+        return EINVAL;
+    }
+
+    err = create_mapping_descriptor(&md, HPS, MAP_TYPE_DMABUF, devptr, size);
+    if (err != 0)
+    {
+        hsa_amd_portable_close_dmabuf(dmabuf_fd);
+        return err;
+    }
+
+    md->dmabuf_fd = dmabuf_fd;
+    md->dmabuf_offset = dmabuf_offset;
+
+#elif defined(_CUDA)
+    /* NVIDIA CUDA path (existing, unchanged) */
     int err = create_mapping_descriptor(&md, 1ULL << 16, MAP_TYPE_CUDA, devptr, size);
     if (err != 0)
     {
         return err;
     }
+#else
+    /* No GPU backend compiled in */
+    dprintf("nvm_dma_map_device: no GPU backend compiled in\n");
+    return ENOTSUP;
+#endif
 
     err = _nvm_dma_init(handle, ctrl, &md->range, &release_mapping_descriptor);
     if (err != 0)
     {
         remove_mapping_descriptor(md);
+#ifdef _HIP
+        hsa_amd_portable_close_dmabuf(dmabuf_fd);
+#endif
         return err;
     }
+
+#ifdef _HIP
+    /* Kernel holds its own refcount via dma_buf_get().
+     * Close userspace fd via HSA runtime API. Do not retry: fd can be
+     * released/reused by ROCm runtime between attempts, making retry unsafe. */
+    hsa_status_t close_status = hsa_amd_portable_close_dmabuf(dmabuf_fd);
+    if (close_status != HSA_STATUS_SUCCESS) {
+        dprintf("hsa_amd_portable_close_dmabuf() failed: %d (kernel retains its own ref)\n", close_status);
+    }
+#endif
 
     return 0;
 }

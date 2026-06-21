@@ -68,14 +68,18 @@ int nvm_dma_map_host(nvm_dma_t** map, const nvm_ctrl_t* ctrl, void* vaddr, size_
 //#if ( defined( __CUDA__ ) || defined( __CUDACC__ ) )
 
 /*
- * Create DMA mapping descriptor from CUDA device pointer using the kernel
+ * Create DMA mapping descriptor from a GPU device pointer using the kernel
  * module. This function is similar to nvm_dma_map_host, except the memory
- * pointer must be a valid CUDA device pointer (see manual for 
- * cudaGetPointerAttributes).
+ * pointer must be a valid GPU device pointer:
+ *
+ *   - NVIDIA CUDA: see cudaGetPointerAttributes (64KB-aligned)
+ *   - AMD HIP:     see hipPointerGetAttributes (page-aligned)
  *
  * The controller handle must have been created using the kernel module.
  *
- * Note: vaddr can not be NULL, and must be aligned to GPU page size.
+ * Note: vaddr can not be NULL, and must be aligned to the GPU's page size.
+ * The kernel module must be compiled with the matching backend
+ * (_CUDA or _HIP) at build time.
  */
 int nvm_dma_map_device(nvm_dma_t** map, const nvm_ctrl_t* ctrl, void* devptr, size_t size);
 

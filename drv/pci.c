@@ -31,6 +31,7 @@
 
 MODULE_DESCRIPTION("UserSpace-GDS NVMe DMA helper");
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_IMPORT_NS("DMA_BUF");
 MODULE_VERSION("1.0");
 
 
@@ -156,6 +157,89 @@ static long map_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
             break;
 #endif
 
+#ifdef _HIP
+        case NVM_MAP_DMABUF_MEMORY:
+        {
+            struct nvm_ioctl_dmabuf dreq;
+            unsigned long n_pages;
+
+            if (copy_from_user(&dreq, (void __user*) arg, sizeof(dreq)))
+            {
+                return -EFAULT;
+            }
+
+            /* Validate ioctl inputs */
+            if (dreq.size == 0 || dreq.size % PAGE_SIZE != 0)
+            {
+                retval = -EINVAL;
+                break;
+            }
+            if (dreq.gpu_ptr == 0 || dreq.gpu_ptr % PAGE_SIZE != 0)
+            {
+                retval = -EINVAL;
+                break;
+            }
+            if (dreq.ioaddrs == 0 || dreq.ioaddrs_capacity == 0)
+            {
+                retval = -EINVAL;
+                break;
+            }
+            /* Validate dmabuf_offset: must be page-aligned (or zero) */
+            if (dreq.dmabuf_offset != 0 && dreq.dmabuf_offset % PAGE_SIZE != 0)
+            {
+                retval = -EINVAL;
+                break;
+            }
+
+            n_pages = dreq.size / PAGE_SIZE;
+            if (dreq.dmabuf_fd < 0)
+            {
+                retval = -EINVAL;
+                break;
+            }
+
+            map = map_dmabuf(&device_list, ctrl,
+                             dreq.gpu_ptr,
+                             dreq.dmabuf_fd,
+                             dreq.dmabuf_offset,
+                             n_pages,
+                             dreq.ioaddrs_capacity);
+
+            if (!IS_ERR_OR_NULL(map))
+            {
+                /* Fail-stop: reject if VRAM was invalidated during setup */
+                if (atomic_read(&map->invalid))
+                {
+                    printk(KERN_ERR "uGDS: dmabuf mapping %llx invalidated "
+                                    "during setup, pinned VRAM migration detected\n",
+                           dreq.gpu_ptr);
+                    unmap_and_release(map);
+                    retval = -EIO;
+                    break;
+                }
+
+                if (map->n_addrs > dreq.ioaddrs_capacity)
+                {
+                    unmap_and_release(map);
+                    retval = -EOVERFLOW;
+                    break;
+                }
+                if (copy_to_user((void __user*)(uintptr_t)dreq.ioaddrs, map->addrs,
+                                 map->n_addrs * sizeof(uint64_t)))
+                {
+                    unmap_and_release(map);
+                    return -EFAULT;
+                }
+                retval = 0;
+            }
+            else
+            {
+                retval = PTR_ERR(map);
+            }
+            break;
+        }
+#endif
+
         case NVM_UNMAP_MEMORY:
             if (copy_from_user(&addr, (void __user*) arg, sizeof(u64)))
             {
@@ -170,6 +254,15 @@ static long map_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
             }
 
 #ifdef _CUDA
+            map = map_find(&device_list, addr);
+            if (map != NULL)
+            {
+                unmap_and_release(map);
+                break;
+            }
+#endif
+
+#ifdef _HIP
             map = map_find(&device_list, addr);
             if (map != NULL)
             {
@@ -254,6 +347,21 @@ static int add_pci_dev(struct pci_dev* dev, const struct pci_device_id* id)
 
     // Enable DMA
     pci_set_master(dev);
+
+    /* Set 64-bit DMA mask for P2P VRAM addresses (large BAR) */
+    if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(64)))
+    {
+        printk(KERN_WARNING DRIVER_NAME " 64-bit DMA mask not supported, trying 32-bit\n");
+        if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(32)))
+        {
+            printk(KERN_ERR DRIVER_NAME " failed to set DMA mask\n");
+            pci_clear_master(dev);
+            pci_disable_device(dev);
+            pci_release_region(dev, 0);
+            ctrl_put(ctrl);
+            return -EIO;
+        }
+    }
 
     ++curr_ctrls;
     return 0;

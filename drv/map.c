@@ -57,6 +57,7 @@ static struct map* create_descriptor(const struct ctrl* ctrl, u64 vaddr, unsigne
     map->data = NULL;
     map->release = NULL;
     map->n_addrs = n_pages;
+    atomic_set(&map->invalid, 0);
 
 
     for (i = 0; i < map->n_addrs; ++i)
@@ -465,6 +466,258 @@ struct map* map_device_memory(struct list* list, const struct ctrl* ctrl, u64 va
 
     //printk(KERN_DEBUG "Mapped %lu GPU pages starting at address %llx\n", 
     //        md->n_addrs, md->vaddr);
+    return md;
+}
+#endif
+
+
+
+/* ── AMD HIP / DMA-buf backend ─────────────────────────────────── */
+
+#ifdef _HIP
+#include <linux/dma-buf.h>
+#include <linux/scatterlist.h>
+#include <linux/dma-resv.h>
+
+struct dmabuf_region
+{
+    struct dma_buf*            dmabuf;
+    struct dma_buf_attachment* attachment;
+    struct sg_table*           sgt;
+};
+
+
+/*
+ * move_notify callback — called by the exporter if it needs to move the buffer.
+ * With dma_buf_pin() held for the mapping lifetime, the exporter cannot move
+ * the buffer, so this callback should never fire. If it does (kernel bug),
+ * we set the invalid flag as a defense-in-depth diagnostic. The setup-time
+ * check in pci.c returns -EIO if invalid is set before addresses are copied
+ * to userspace. This mirrors NVIDIA P2P's free_callback semantics where
+ * pinned GPU memory is guaranteed not to migrate.
+ */
+static void ugds_dmabuf_move_notify(struct dma_buf_attachment* attachment)
+{
+    struct map* map = (struct map*) attachment->importer_priv;
+
+    if (map)
+    {
+        atomic_set(&map->invalid, 1);
+        WARN_ONCE(1, "uGDS: dmabuf move_notify — mapping %llx invalidated. "
+                     "Pinned VRAM must not migrate.\n", map->vaddr);
+    }
+}
+
+
+static const struct dma_buf_attach_ops ugds_dmabuf_attach_ops = {
+    .allow_peer2peer = true,
+    .move_notify     = ugds_dmabuf_move_notify,
+};
+
+
+void release_dmabuf_memory(struct map* map)
+{
+    struct dmabuf_region* dr = (struct dmabuf_region*) map->data;
+
+    if (dr != NULL)
+    {
+        if (dr->sgt != NULL) {
+            dma_resv_lock(dr->dmabuf->resv, NULL);
+            dma_buf_unmap_attachment(dr->attachment, dr->sgt, DMA_BIDIRECTIONAL);
+            dma_buf_unpin(dr->attachment);
+            dma_resv_unlock(dr->dmabuf->resv);
+        }
+        if (dr->attachment != NULL)
+            dma_buf_detach(dr->dmabuf, dr->attachment);
+        if (dr->dmabuf != NULL)
+            dma_buf_put(dr->dmabuf);
+        kfree(dr);
+        map->data = NULL;
+    }
+}
+
+
+static int map_dmabuf_memory(struct map* map, int dmabuf_fd,
+                              u64 hsa_offset, unsigned long expected_pages,
+                              size_t ioaddrs_capacity)
+{
+    struct dmabuf_region* dr;
+    struct scatterlist*   sg;
+    unsigned long page_idx = 0;
+    unsigned long ctrl_page_size = PAGE_SIZE;
+    u64 remaining_offset = hsa_offset;
+    int err, i;
+
+    if (expected_pages > ioaddrs_capacity)
+    {
+        printk(KERN_ERR "uGDS: page count %lu exceeds ioaddrs capacity %zu\n",
+               expected_pages, ioaddrs_capacity);
+        return -EOVERFLOW;
+    }
+
+    dr = kmalloc(sizeof(struct dmabuf_region), GFP_KERNEL);
+    if (dr == NULL)
+    {
+        printk(KERN_CRIT "uGDS: failed to allocate dmabuf region\n");
+        return -ENOMEM;
+    }
+
+    dr->dmabuf = dma_buf_get(dmabuf_fd);
+    if (IS_ERR(dr->dmabuf))
+    {
+        kfree(dr);
+        return PTR_ERR(dr->dmabuf);
+    }
+
+    dr->attachment = dma_buf_dynamic_attach(dr->dmabuf, &map->pdev->dev,
+                                             &ugds_dmabuf_attach_ops, map);
+    if (IS_ERR(dr->attachment))
+    {
+        dma_buf_put(dr->dmabuf);
+        kfree(dr);
+        return PTR_ERR(dr->attachment);
+    }
+
+    /*
+     * Pin the attachment to prevent VRAM migration for the mapping lifetime.
+     * dma_buf_pin() must be called with reservation lock held.
+     * While pinned, the exporter cannot move the buffer and move_notify
+     * will not fire — DMA addresses stay valid until unmap.
+     * This is the same guarantee as NVIDIA P2P nvidia_p2p_get_pages().
+     *
+     * Synchronization contract (same as NVIDIA GDS/cuFile):
+     * The pin prevents VRAM migration, but does NOT prevent concurrent
+     * GPU writes to the same allocation. The caller (userspace uGDS IO)
+     * MUST ensure exclusive access during NVMe DMA transfer — no concurrent
+     * HIP kernel writes to the mapped region while IO is in flight.
+     * This mirrors the NVIDIA GDS requirement that applications avoid
+     * concurrent GPU modifications of registered buffers during I/O.
+     *
+     * No dma-resv fence is published because the kernel bypass path does
+     * not go through the DMA-buf sync API — NVMe PRP addresses are used
+     * directly from userspace via the NVMe submission queue. This is the
+     * same design as NVIDIA cuFile/GDS, which also relies on caller-side
+     * synchronization rather than reservation fences for registered buffers.
+     */
+    dma_resv_lock(dr->dmabuf->resv, NULL);
+    err = dma_buf_pin(dr->attachment);
+    dma_resv_unlock(dr->dmabuf->resv);
+    if (err)
+    {
+        printk(KERN_ERR "uGDS: dma_buf_pin failed: %d\n", err);
+        dma_buf_detach(dr->dmabuf, dr->attachment);
+        dma_buf_put(dr->dmabuf);
+        kfree(dr);
+        return err;
+    }
+
+    /* Map for DMA — dynamic importer must hold reservation lock */
+    dma_resv_lock(dr->dmabuf->resv, NULL);
+    dr->sgt = dma_buf_map_attachment(dr->attachment, DMA_BIDIRECTIONAL);
+    dma_resv_unlock(dr->dmabuf->resv);
+    if (IS_ERR(dr->sgt))
+    {
+        err = PTR_ERR(dr->sgt);
+        dma_resv_lock(dr->dmabuf->resv, NULL);
+        dma_buf_unpin(dr->attachment);
+        dma_resv_unlock(dr->dmabuf->resv);
+        dma_buf_detach(dr->dmabuf, dr->attachment);
+        dma_buf_put(dr->dmabuf);
+        kfree(dr);
+        return err;
+    }
+
+    map->page_size = ctrl_page_size;
+    map->data = dr;
+    map->release = release_dmabuf_memory;
+
+    /* Flatten sg_table into per-page DMA addresses.
+     * Consume HSA offset across multiple SG entries. */
+    for_each_sgtable_dma_sg(dr->sgt, sg, i)
+    {
+        u64 addr = sg_dma_address(sg);
+        unsigned int len = sg_dma_len(sg);
+
+        /* Skip SG entries until we consume the full offset */
+        if (remaining_offset > 0)
+        {
+            if (remaining_offset >= len)
+            {
+                remaining_offset -= len;
+                continue;
+            }
+            addr += remaining_offset;
+            len -= remaining_offset;
+            remaining_offset = 0;
+        }
+
+        while (len >= ctrl_page_size && page_idx < expected_pages)
+        {
+            map->addrs[page_idx++] = addr;
+            addr += ctrl_page_size;
+            len -= ctrl_page_size;
+        }
+
+        if (page_idx >= expected_pages)
+            break;
+    }
+
+    if (page_idx != expected_pages)
+    {
+        printk(KERN_ERR "uGDS: dmabuf page count mismatch: got %lu, expected %lu\n",
+               page_idx, expected_pages);
+        err = -EINVAL;
+        goto fail;
+    }
+
+    return 0;
+
+fail:
+    dma_resv_lock(dr->dmabuf->resv, NULL);
+    dma_buf_unmap_attachment(dr->attachment, dr->sgt, DMA_BIDIRECTIONAL);
+    dma_buf_unpin(dr->attachment);
+    dma_resv_unlock(dr->dmabuf->resv);
+    dma_buf_detach(dr->dmabuf, dr->attachment);
+    dma_buf_put(dr->dmabuf);
+    kfree(dr);
+    map->data = NULL;
+    return err;
+}
+
+
+struct map* map_dmabuf(struct list* list, const struct ctrl* ctrl,
+                        u64 gpu_ptr, int dmabuf_fd,
+                        u64 dmabuf_offset, unsigned long n_pages,
+                        size_t ioaddrs_capacity)
+{
+    int err;
+    struct map* md;
+
+    if (n_pages < 1)
+    {
+        return ERR_PTR(-EINVAL);
+    }
+
+    /* Use GPU pointer as vaddr for map_find() lookup on unmap */
+    md = create_descriptor(ctrl, gpu_ptr, n_pages);
+    if (IS_ERR(md))
+    {
+        return md;
+    }
+
+    md->page_size = PAGE_SIZE;
+    err = map_dmabuf_memory(md, dmabuf_fd, dmabuf_offset, n_pages,
+                             ioaddrs_capacity);
+    if (err != 0)
+    {
+        unmap_and_release(md);
+        return ERR_PTR(err);
+    }
+
+    list_insert(list, &md->list);
+
+    printk(KERN_DEBUG "uGDS: mapped %lu dmabuf pages starting at gpu_ptr %llx\n",
+           md->n_addrs, md->vaddr);
     return md;
 }
 #endif

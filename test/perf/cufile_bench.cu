@@ -6,7 +6,23 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <cuda_runtime.h>
+
+#ifdef __HIP_PLATFORM_AMD__
+  #include <hip/hip_runtime.h>
+  #define cudaMalloc            hipMalloc
+  #define cudaFree              hipFree
+  #define cudaMemcpy           hipMemcpy
+  #define cudaMemset            hipMemset
+  #define cudaSetDevice         hipSetDevice
+  #define cudaDeviceSynchronize hipDeviceSynchronize
+  #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
+  #define cudaSuccess           hipSuccess
+  #define cudaError_t           hipError_t
+  #define cudaGetErrorString    hipGetErrorString
+  #define cudaStreamSynchronize hipStreamSynchronize
+#else
+  #include <cuda_runtime.h>
+#endif
 
 #ifdef USE_NVIDIA_GDS
 #include <cufile.h>
