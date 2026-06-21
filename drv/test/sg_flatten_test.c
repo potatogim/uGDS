@@ -190,5 +190,5 @@ static struct kunit_suite sg_flatten_test_suite = {
 
 kunit_test_suite(sg_flatten_test_suite);
 
-MODULE_LICENSE("BSD-3-Clause");
+MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("uGDS SG flatten KUnit tests");
