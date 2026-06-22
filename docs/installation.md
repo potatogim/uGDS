@@ -38,7 +38,7 @@ The kernel-side code uses standard upstream DMA-buf APIs (`dma_buf_dynamic_attac
 **Synchronization contract:**
 Buffers registered with `uGDSBufRegister()` must not be modified by the GPU (HIP kernel writes) while NVMe I/O is in flight on the same buffer. Concurrent GPU access during DMA can cause data corruption. This mirrors the NVIDIA GDS requirement.
 
-**Important:** Each backend used at runtime must be enabled in both the kernel module and the userspace library. For example, a CUDA-only kernel module will reject HIP `uGDSBufRegister()` calls. In dual-backend builds, use `uGDSBufRegister(ptr, size, UGDS_REGISTER_DMABUF)` for AMD buffers and `uGDSBufRegister(ptr, size, 0)` for NVIDIA buffers (default).
+**Important:** The kernel module and userspace library MUST be built with the same backend. A CUDA kernel module (`make` default) with a HIP userspace library (`-DUGDS_BACKEND_HIP=ON`) will fail at `uGDSBufRegister()` time with `UGDS_GPU_MEMORY_PINNING_FAILED`. Verify backend consistency before deploying.
 
 ## Step 1: Build the Kernel Module
 
@@ -65,7 +65,7 @@ make KERNEL=/path/to/kernel/build NVIDIA_DIR=/usr/src/nvidia-550.54.14
 
 ```bash
 cd drv
-make BUILD_HIP=1 BUILD_CUDA=0
+make BUILD_HIP=1
 ```
 
 No NVIDIA driver headers needed -- the HIP path uses standard Linux DMA-buf framework. Kernel headers (`/lib/modules/$(uname -r)/build`) are still required.

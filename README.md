@@ -16,7 +16,7 @@
 
 - **User-space IO stack** — bypasses the kernel NVMe driver and filesystem entirely; CPU builds NVMe commands and polls completions in user space
 - **cuFile API compatible** — existing GDS applications work with minimal changes (relink to `libugds.so`, change `cuFile` prefix to `uGDS`)
-- **Multi-vendor GPU support** -- NVIDIA CUDA and AMD Infinity Storage (HIP/ROCm) backends, individually or together for systems with both vendor GPUs
+- **Multi-vendor GPU support** — NVIDIA CUDA and AMD HIP/ROCm backends (mutually exclusive at compile time)
 - **Fully open-source** — BSD 3-Clause licensed; no proprietary runtime dependencies beyond the GPU driver (NVIDIA driver or AMD ROCm runtime)
 - **High performance** — busy-poll CQ completion with `_mm_pause()`, multi-queue round-robin IO, achieving up to 2.7x read and 28x write bandwidth over NVIDIA GDS
 
@@ -91,8 +91,8 @@ For build instructions, environment setup, and driver management, see the **[Ins
 To build with the AMD HIP backend instead of CUDA:
 
 ```bash
-# Kernel module (HIP-only if NVIDIA source is present, add BUILD_CUDA=0)
-cd drv && make BUILD_HIP=1 BUILD_CUDA=0
+# Kernel module
+cd drv && make BUILD_HIP=1
 
 # Userspace library
 mkdir build && cd build

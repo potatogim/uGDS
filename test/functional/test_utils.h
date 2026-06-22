@@ -16,11 +16,8 @@
   #define cudaError_t           hipError_t
   #define cudaGetErrorString    hipGetErrorString
   #define cudaStreamSynchronize hipStreamSynchronize
-  /* HIP builds must use dmabuf path */
-  #define TEST_BUF_FLAGS  UGDS_REGISTER_DMABUF
 #else
   #include <cuda_runtime.h>
-  #define TEST_BUF_FLAGS  0
 #endif
 #include <cstdio>
 #include <cstdlib>
