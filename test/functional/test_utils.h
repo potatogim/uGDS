@@ -2,7 +2,23 @@
 #define __UGDS_TEST_UTILS_H__
 
 #include <ugds.h>
-#include <cuda_runtime.h>
+
+#ifdef __HIP_PLATFORM_AMD__
+  #include <hip/hip_runtime.h>
+  #define cudaMalloc            hipMalloc
+  #define cudaFree              hipFree
+  #define cudaMemcpy           hipMemcpy
+  #define cudaMemset            hipMemset
+  #define cudaSetDevice         hipSetDevice
+  #define cudaDeviceSynchronize hipDeviceSynchronize
+  #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
+  #define cudaSuccess           hipSuccess
+  #define cudaError_t           hipError_t
+  #define cudaGetErrorString    hipGetErrorString
+  #define cudaStreamSynchronize hipStreamSynchronize
+#else
+  #include <cuda_runtime.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
