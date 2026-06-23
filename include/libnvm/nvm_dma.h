@@ -83,6 +83,13 @@ int nvm_dma_map_host(nvm_dma_t** map, const nvm_ctrl_t* ctrl, void* vaddr, size_
  */
 int nvm_dma_map_device(nvm_dma_t** map, const nvm_ctrl_t* ctrl, void* devptr, size_t size);
 
+/*
+ * Extended version with flags for backend selection.
+ * flags: 0 for NVIDIA CUDA (default), NVM_MAP_DMABUF for AMD HIP.
+ */
+#define NVM_MAP_DMABUF  0x1
+int nvm_dma_map_device_ex(nvm_dma_t** map, const nvm_ctrl_t* ctrl, void* devptr, size_t size, int flags);
+
 //#endif /* __CUDA__ */
 
 
