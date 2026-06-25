@@ -60,29 +60,31 @@ static void* sync_rw_thread(void* arg) {
     ThreadData* data = (ThreadData*)arg;
     struct timespec io_start, io_end;
     uGDSHandle_t cf_handle = *(uGDSHandle_t*)data->handler;
-    ssize_t io_size = (ssize_t)data->io_size;
     size_t done_bytes = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &data->start_time);
 
     while (done_bytes < data->size) {
+        size_t remaining = data->size - done_bytes;
+        size_t this_io = (remaining < data->io_size) ? remaining : data->io_size;
+
         clock_gettime(CLOCK_MONOTONIC, &io_start);
 
         ssize_t result;
         if (data->mode == 1) {
-            result = uGDSWrite(cf_handle, data->gpu_buffer, data->io_size,
+            result = uGDSWrite(cf_handle, data->gpu_buffer, this_io,
                                  data->offset + done_bytes, done_bytes);
         } else {
-            result = uGDSRead(cf_handle, data->gpu_buffer, data->io_size,
+            result = uGDSRead(cf_handle, data->gpu_buffer, this_io,
                                 data->offset + done_bytes, 0);
         }
 
         if (result == 0) {
             break;
         }
-        if (result != io_size) {
-            fprintf(stderr, "thread %d: IO error, result=%zd, expected=%zd\n",
-                    data->thread_id, result, io_size);
+        if (result != (ssize_t)this_io) {
+            fprintf(stderr, "thread %d: IO error, result=%zd, expected=%zu\n",
+                    data->thread_id, result, this_io);
             return NULL;
         }
 
@@ -92,6 +94,7 @@ static void* sync_rw_thread(void* arg) {
         data->latency_vec.push_back(io_time);
         data->total_io_time += io_time;
         data->io_operations++;
+        data->total_bytes += result;
         done_bytes += result;
     }
 
@@ -129,24 +132,29 @@ static void* batch_rw_thread(void* arg) {
 
     while (done_bytes < data->size) {
         unsigned nr = 0;
-        for (size_t i = 0; i < batch_size && done_bytes + i * data->io_size < data->size; i++) {
+        size_t batch_bytes = 0;
+        for (size_t i = 0; i < batch_size && done_bytes + batch_bytes < data->size; i++) {
+            size_t remaining = data->size - done_bytes - batch_bytes;
+            size_t this_io = (remaining < data->io_size) ? remaining : data->io_size;
+
             memset(&params[i], 0, sizeof(params[0]));
 #ifdef USE_NVIDIA_GDS
             params[i].mode = CUFILE_BATCH;
             params[i].u.batch.devPtr_base = data->gpu_buffer;
-            params[i].u.batch.file_offset = data->offset + done_bytes + i * data->io_size;
-            params[i].u.batch.devPtr_offset = (done_bytes + i * data->io_size) % data->size;
-            params[i].u.batch.size = data->io_size;
+            params[i].u.batch.file_offset = data->offset + done_bytes + batch_bytes;
+            params[i].u.batch.devPtr_offset = (done_bytes + batch_bytes) % data->size;
+            params[i].u.batch.size = this_io;
             params[i].fh = cf_handle;
             params[i].opcode = data->mode ? CUFILE_WRITE : CUFILE_READ;
 #else
             params[i].devPtr_base = data->gpu_buffer;
-            params[i].file_offset = data->offset + done_bytes + i * data->io_size;
-            params[i].devPtr_offset = (done_bytes + i * data->io_size) % data->size;
-            params[i].size = data->io_size;
+            params[i].file_offset = data->offset + done_bytes + batch_bytes;
+            params[i].devPtr_offset = (done_bytes + batch_bytes) % data->size;
+            params[i].size = this_io;
             params[i].opcode = data->mode ? UGDS_WRITE : UGDS_READ;
 #endif
             nr++;
+            batch_bytes += this_io;
         }
         if (nr == 0) break;
 
@@ -162,11 +170,24 @@ static void* batch_rw_thread(void* arg) {
             break;
         }
 
-        unsigned nr_out = nr;
+        unsigned nr_out = 0;
         st = uGDSBatchIOGetStatus(batch, nr, &nr_out, events.data(), nullptr);
         if (st.err != UGDS_SUCCESS) {
             fprintf(stderr, "thread %d: BatchIOGetStatus failed\n", data->thread_id);
             break;
+        }
+        if (nr_out != nr) {
+            fprintf(stderr, "thread %d: batch incomplete: submitted %u, completed %u\n",
+                    data->thread_id, nr, nr_out);
+        }
+        size_t completed_bytes = 0;
+        for (unsigned i = 0; i < nr_out; i++) {
+            if ((ssize_t)events[i].ret < 0) {
+                fprintf(stderr, "thread %d: batch event[%u] error: ret=%zd\n",
+                        data->thread_id, i, (ssize_t)events[i].ret);
+            } else {
+                completed_bytes += events[i].ret;
+            }
         }
 
         clock_gettime(CLOCK_MONOTONIC, &batch_end);
@@ -174,8 +195,9 @@ static void* batch_rw_thread(void* arg) {
         uint64_t batch_time = ts_diff_ns(batch_start, batch_end);
         data->latency_vec.push_back(batch_time);
         data->total_io_time += batch_time;
-        data->io_operations += nr;
-        done_bytes += nr * data->io_size;
+        data->io_operations += nr_out;
+        data->total_bytes += completed_bytes;
+        done_bytes += batch_bytes;
     }
 
     clock_gettime(CLOCK_MONOTONIC, &data->end_time);
@@ -203,7 +225,11 @@ static void run_ugds_bench(BenchOpts& opts) {
         label = opts.is_write ? "uGDS-write" : "uGDS-read";
 #endif
 
+#ifdef USE_NVIDIA_GDS
+    printf("=== GDS Benchmark ===\n");
+#else
     printf("=== uGDS Benchmark ===\n");
+#endif
     printf("  File:       %s\n", opts.file_path);
     printf("  Length:     %zu bytes (%.2f MB)\n", opts.length, opts.length / (double)MB);
     printf("  IO size:    %zu bytes\n", opts.io_size);
@@ -256,6 +282,7 @@ static void run_ugds_bench(BenchOpts& opts) {
         td->handler = &cf_handle;
         td->total_io_time = 0;
         td->io_operations = 0;
+        td->total_bytes = 0;
         td->device_id = opts.gpu_id;
 
         CHECK_CUDA(cudaMalloc(&td->gpu_buffer, chunk_size));
@@ -287,11 +314,15 @@ static void run_ugds_bench(BenchOpts& opts) {
 
     uint64_t prog_time_ns = ts_diff_ns(prog_start, prog_end);
 
-    report_results(label, threads, opts.io_size, prog_time_ns, opts.json);
+    size_t actual_bytes = 0;
+    for (auto& t : threads)
+        actual_bytes += t.total_bytes;
+
+    report_results(label, threads, opts.io_size, actual_bytes, prog_time_ns, opts.json);
 
     for (int i = 0; i < num_threads; i++) {
         uGDSBufDeregister(threads[i].gpu_buffer);
-        CHECK_CUDA(cudaFree(threads[i].gpu_buffer));
+        cudaFree(threads[i].gpu_buffer);
     }
 
     uGDSHandleDeregister(cf_handle);
