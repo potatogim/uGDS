@@ -49,14 +49,17 @@ All GPU memory accessors are classified as **producers** (write to GPU VRAM) or 
 | GPU **Kernel Read** | VRAM -> GPU ALU | **Consumer** |
 
 **Rules:**
-1. A producer and consumer must NOT access the same buffer region simultaneously.
-2. After a producer completes, an explicit barrier is required before a consumer accesses the buffer:
+1. Any producer requires exclusive ownership of the region. Two producers must NOT overlap (e.g., NVMe Read + RDMA Recv on the same VRAM is a data race).
+2. Two consumers may safely overlap (e.g., NVMe Write + RDMA Send both reading GPU VRAM).
+3. Any transition involving a producer requires the previous operation's completion barrier:
+   - Consumer → Producer: drain all consumer completions before starting the producer.
+   - Producer → Consumer: wait for producer completion before starting the consumer.
+4. After a producer completes, an explicit barrier is required before any dependent operation:
    - NVMe I/O: `uGDSRead()`/`uGDSWrite()` return value (synchronous) or batch completion poll
    - RDMA: `ibv_poll_cq` for Work Completion
    - GPU: `cudaStreamSynchronize()` / `hipStreamSynchronize()`
-3. Two consumers may safely overlap (e.g., NVMe Write + RDMA Send both reading GPU VRAM).
-4. A running GPU kernel must NOT overlap any third-party producer (NVMe/RDMA) on the same region.
-5. `CU_POINTER_ATTRIBUTE_SYNC_MEMOPS` is set automatically for RDMA-enabled CUDA buffers to ensure BAR consistency, but it does NOT replace explicit stream/CQ barriers.
+5. A running GPU kernel must NOT overlap any third-party producer (NVMe/RDMA) on the same region.
+6. `CU_POINTER_ATTRIBUTE_SYNC_MEMOPS` is set automatically for RDMA-enabled CUDA buffers to ensure BAR consistency, but it does NOT replace explicit stream/CQ barriers.
 
 For **RDMA** buffers (registered with `enable_rdma=1`), additional lifetime rules apply:
 - All RDMA completions (`ibv_poll_cq`) and `ibv_dereg_mr()` MUST complete before `uGDSBufDeregister()`.

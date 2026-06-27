@@ -181,14 +181,11 @@ run_functional() {
         run_test "$t" "$BUILD_DIR/$t" "$ugds_dev" "$GPU_ID"
     done
     for t in "${rdma_tests[@]}"; do
-        # RDMA tests may not be built in non-RDMA configs
-        # In dual-backend builds, targets may be suffixed (_cuda/_hip)
-        local found=""
+        # RDMA tests may not be built in non-RDMA configs.
+        # In dual-backend builds, both _cuda and _hip variants may exist.
         for suffix in "" "_cuda" "_hip"; do
             if [ -x "$BUILD_DIR/${t}${suffix}" ]; then
                 run_test "$t${suffix}" "$BUILD_DIR/${t}${suffix}" "$ugds_dev" "$GPU_ID"
-                found=1
-                break
             fi
         done
     done
