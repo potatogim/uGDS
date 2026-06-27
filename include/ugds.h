@@ -178,6 +178,19 @@ typedef struct uGDSRDMARegion {
     uint64_t        iova;        /* IOVA/base address for SGE posting */
 } uGDSRDMARegion_t;
 
+/* Register a buffer for RDMA. Internally calls uGDSExportDmabuf + ibv_reg_dmabuf_mr.
+ * Increments rdma_mr_refcount for the buffer.
+ *
+ * NOTE: The MR covers the page-aligned export length, which may be
+ * slightly larger than the requested buffer size for non-page-aligned
+ * allocations. Use page-aligned buffer sizes to avoid exposing extra
+ * VRAM through the MR/rkey.
+ *
+ * Parameters:
+ *   bufPtr_base  - previously registered with uGDSBufRegisterEx(enable_rdma=true)
+ *   pd           - ibv protection domain
+ *   access_flags - IBV access flags
+ *   region       - output: MR handle + keys + IOVA */
 uGDSError_t uGDSRDMARegister(const void* bufPtr_base,
                               struct ibv_pd* pd,
                               int access_flags,
@@ -249,9 +262,9 @@ void uGDSBatchIODestroy(uGDSBatchHandle_t batch);
  * Backend dispatch:
  *   - CUDA-only build: uses cudaLaunchHostFunc
  *   - HIP-only build: uses hipLaunchHostFunc
- *   - Dual-backend build: uses cudaLaunchHostFunc (CUDA primary).
- *     For HIP async IO in a dual build, synchronize the hipStream before
- *     calling uGDS async IO, or build HIP-only for native HIP dispatch. */
+ *   - Dual-backend build: dispatches based on the buffer's registered
+ *     backend (UGDS_BACKEND_CUDA → cudaLaunchHostFunc,
+ *     UGDS_BACKEND_HIP → hipLaunchHostFunc). */
 
 uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void *bufPtr_base,
                            size_t *size_p, off_t *file_offset_p,
