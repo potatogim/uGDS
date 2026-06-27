@@ -93,6 +93,19 @@ option(UGDS_ENABLE_RDMA "Enable tracked RDMA convenience API (libibverbs)" OFF)
 if(UGDS_ENABLE_RDMA)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(IBVERBS REQUIRED IMPORTED_TARGET libibverbs)
+    # Verify ibv_reg_dmabuf_mr is available (rdma-core >= v37)
+    set(CMAKE_REQUIRED_LIBRARIES "PkgConfig::IBVERBS")
+    check_cxx_source_compiles("
+        #include <infiniband/verbs.h>
+        int main() {
+            ibv_reg_dmabuf_mr(0, 0, 0, 0, 0, 0);
+            return 0;
+        }" HAVE_IBV_REG_DMABUF_MR)
+    set(CMAKE_REQUIRED_LIBRARIES)
+    if(NOT HAVE_IBV_REG_DMABUF_MR)
+        message(FATAL_ERROR "ibv_reg_dmabuf_mr not found. "
+                            "Install rdma-core >= v37 or disable RDMA (-DUGDS_ENABLE_RDMA=OFF).")
+    endif()
 endif()
 
 # - CUDA dma-buf detection ----------------------

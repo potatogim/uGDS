@@ -77,7 +77,11 @@ static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
 /* Dual-backend build: runtime dispatch based on buffer's backend.
  * Cannot include both cuda_runtime.h and hip_runtime_api.h in the same
  * TU due to vector type conflicts. Declare the runtime functions as
- * extern "C" — both libcudart and libamdhip64 export them. */
+ * extern "C" — both libcudart and libamdhip64 export them.
+ *
+ * NOTE: On ROCm, hipLaunchHostFunc can map to hipLaunchHostFunc_spt
+ * when HIP_API_PER_THREAD_DEFAULT_STREAM is enabled. This declaration
+ * matches the default (non-SPT) ABI. For SPT support, build HIP-only. */
 
 /* Declare the runtime launch functions directly without their headers.
  * Both accept (stream_ptr, callback, user_data) and return int-like. */
