@@ -27,6 +27,12 @@
 #define UGDS_MAX_BATCH_IO_SIZE   128
 #define UGDS_PRP_POOL_PAGES      16
 
+// Granularity at which the kernel driver pins GPU memory (drv/map.c:
+// GPU_PAGE_SIZE = 1 << 16). The driver masks device addresses with
+// GPU_PAGE_MASK, so a base+offset that is not aligned to this is silently
+// rounded down — the DMA would then target the wrong GPU address.
+#define UGDS_GPU_PAGE_SIZE       (1UL << 16)
+
 struct IOQueuePair {
     nvm_queue_t    sq;
     nvm_queue_t    cq;

@@ -52,6 +52,14 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
         }
     } else {
         void* map_ptr = static_cast<uint8_t*>(bufPtr_base) + bufPtr_offset;
+        // On-the-fly buffers are pinned by the kernel driver at GPU-page (64KB)
+        // granularity; it masks the device address with GPU_PAGE_MASK. A map_ptr
+        // that is not 64KB-aligned would be silently rounded down, so the DMA
+        // would land at the wrong GPU address (silent data corruption). The
+        // registered path above already enforces alignment; reject here too.
+        if ((reinterpret_cast<uintptr_t>(map_ptr) % UGDS_GPU_PAGE_SIZE) != 0) {
+            return -EINVAL;
+        }
         int rc = nvm_dma_map_device(&buf_dma, hs->ctrl, map_ptr, size);
         if (rc != 0 || buf_dma == nullptr) {
             return -EIO;
