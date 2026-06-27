@@ -309,6 +309,11 @@ if(UGDS_BACKEND_HIP)
                 HIP_ARCHITECTURES "${UGDS_HIP_ARCHITECTURES}"
                 BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
             )
+            # RDMA tests need _RDMA define and libibverbs
+            if(${test_name} STREQUAL "test_rdma_tracked" AND UGDS_ENABLE_RDMA)
+                target_compile_definitions(${test_name}${HIP_SUFFIX} PRIVATE _RDMA)
+                target_link_libraries(${test_name}${HIP_SUFFIX} ${IBVERBS_LIBRARIES})
+            endif()
         endforeach()
 
         # bench_ugds (HIP)

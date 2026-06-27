@@ -356,15 +356,13 @@ static int add_pci_dev(struct pci_dev* dev, const struct pci_device_id* id)
     // Enable DMA
     pci_set_master(dev);
 
-#if defined(_HIP)
-    /* HIP/dma-buf backend requires 64-bit DMA for P2P VRAM addresses
-     * (large BAR). Only enforced for HIP builds — standard CUDA kernel
-     * P2P path (nvidia_p2p_get_pages) does not require this.
-     * CUDA dmabuf builds that need 64-bit DMA should use BUILD_HIP=1
-     * or define this explicitly. */
+#if defined(UGDS_HAVE_DMABUF)
+    /* dmabuf backend (HIP or CUDA dma-buf) requires 64-bit DMA for P2P
+     * VRAM addresses (large BAR). Standard CUDA kernel P2P path
+     * (nvidia_p2p_get_pages, non-dmabuf) does not require this. */
     if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(64)))
     {
-        printk(KERN_ERR DRIVER_NAME " HIP backend requires 64-bit DMA mask\n");
+        printk(KERN_ERR DRIVER_NAME " dmabuf backend requires 64-bit DMA mask\n");
         pci_clear_master(dev);
         pci_disable_device(dev);
         pci_release_region(dev, 0);
