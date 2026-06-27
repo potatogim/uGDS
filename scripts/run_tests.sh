@@ -194,11 +194,17 @@ run_functional() {
     for t in "${rdma_tests[@]}"; do
         # RDMA tests may not be built in non-RDMA configs.
         # In dual-backend builds, both _cuda and _hip variants may exist.
+        local found=0
         for suffix in "" "_cuda" "_hip"; do
             if [ -x "$BUILD_DIR/${t}${suffix}" ]; then
                 run_test "$t${suffix}" "$BUILD_DIR/${t}${suffix}" "$ugds_dev" "$GPU_ID"
+                found=1
             fi
         done
+        if [ $found -eq 0 ]; then
+            printf "  %-40s ${Y}SKIP${N} (not built)\n" "$t"
+            SKIPPED=$((SKIPPED + 1))
+        fi
     done
     echo ""
 }
