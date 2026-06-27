@@ -44,22 +44,29 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         return make_error(UGDS_INVALID_VALUE);
     }
 
-    /* Build flags from config */
+    /* Build flags from config — validate backend */
     int flags = 0;
-    if (config->enable_rdma) {
-        flags |= NVM_MAP_RDMA;
-    }
-    if (config->backend == UGDS_BACKEND_HIP) {
+    switch (config->backend) {
+    case UGDS_BACKEND_DEFAULT:
+        break;
+    case UGDS_BACKEND_HIP:
 #ifndef _HIP
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
         flags |= NVM_MAP_DMABUF;
 #endif
-    }
-    if (config->backend == UGDS_BACKEND_CUDA) {
+        break;
+    case UGDS_BACKEND_CUDA:
 #ifndef _CUDA
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #endif
+        break;
+    default:
+        return make_error(UGDS_INVALID_VALUE);
+    }
+
+    if (config->enable_rdma) {
+        flags |= NVM_MAP_RDMA;
     }
 
     return uGDSBufRegister(bufPtr_base, length, flags);

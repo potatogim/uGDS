@@ -172,9 +172,10 @@ uGDSError_t uGDSExportDmabuf(const void* bufPtr_base,
 struct ibv_pd;
 
 typedef struct uGDSRDMARegion {
-    void*           mr;      /* ibv_mr* (opaque) */
+    void*           mr;          /* ibv_mr* (opaque) */
     uint32_t        lkey;
     uint32_t        rkey;
+    uint64_t        iova;        /* IOVA/base address for SGE posting */
 } uGDSRDMARegion_t;
 
 uGDSError_t uGDSRDMARegister(const void* bufPtr_base,
