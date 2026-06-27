@@ -9,6 +9,7 @@
   #define cudaFree              hipFree
   #define cudaMemcpy           hipMemcpy
   #define cudaMemset            hipMemset
+  #define cudaMemsetAsync       hipMemsetAsync
   #define cudaSetDevice         hipSetDevice
   #define cudaDeviceSynchronize hipDeviceSynchronize
   #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
@@ -20,6 +21,7 @@
   #define cudaStreamDestroy     hipStreamDestroy
   #define cudaStreamSynchronize hipStreamSynchronize
   #define cudaHostAlloc         hipHostMalloc
+  #define cudaHostAllocDefault  hipHostMallocDefault
   #define cudaFreeHost          hipHostFree
   #define cudaLaunchHostFunc    hipLaunchHostFunc
   /* HIP builds must use dmabuf path */
