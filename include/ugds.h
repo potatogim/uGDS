@@ -7,8 +7,9 @@
 #include <libnvm/nvm_dma.h>  /* NVM_MAP_DMABUF */
 #include <time.h>
 
-/* Conditional GPU runtime include — supports both CUDA and HIP */
-#ifdef __CUDACC__
+/* Conditional GPU runtime include — supports both CUDA and HIP.
+ * _CUDA/_HIP are CMake-defined backend selectors (not compiler builtins). */
+#if defined(_CUDA)
 #include <cuda_runtime.h>
 #elif defined(__HIP_PLATFORM_AMD__)
 #include <hip/hip_runtime_api.h>
@@ -20,10 +21,8 @@ extern "C" {
 #endif
 
 /* Opaque stream type when no GPU SDK is present */
-#ifndef __CUDACC__
-#ifndef __HIP_PLATFORM_AMD__
+#if !defined(_CUDA) && !defined(__HIP_PLATFORM_AMD__)
 typedef void* cudaStream_t;
-#endif
 #endif
 
 #define UGDS_BASE_ERR 5000
