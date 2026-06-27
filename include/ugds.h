@@ -103,7 +103,7 @@ void uGDSHandleDeregister(uGDSHandle_t fh);
 uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, int flags);
 
 /* Flag for uGDSBufRegister: use AMD HIP/dma-buf path */
-#define UGDS_REGISTER_DMABUF  NVM_MAP_DMABUF
+#define UGDS_REGISTER_DMABUF  0x1   /* Use AMD HIP/dma-buf path */
 
 uGDSError_t uGDSBufDeregister(const void* bufPtr_base);
 

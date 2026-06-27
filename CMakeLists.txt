@@ -126,7 +126,6 @@ if(UGDS_BACKEND_HIP)
     endif()
 endif()
 
-target_link_libraries(ugds PRIVATE Threads::Threads)
 target_compile_options(ugds PRIVATE -Wall -O2)
 
 # - Tests and benchmarks -----------------------
