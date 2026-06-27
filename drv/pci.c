@@ -357,12 +357,11 @@ static int add_pci_dev(struct pci_dev* dev, const struct pci_device_id* id)
     pci_set_master(dev);
 
 #if defined(UGDS_HAVE_DMABUF)
-    /* HIP backend requires 64-bit DMA for P2P VRAM addresses (large BAR).
-     * 32-bit fallback is intentionally a hard failure -- AMD GPU P2P
-     * DMA requires 64-bit addressing. */
+    /* dmabuf backend (HIP or CUDA) requires 64-bit DMA for P2P VRAM
+     * addresses (large BAR). 32-bit fallback is a hard failure. */
     if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(64)))
     {
-        printk(KERN_ERR DRIVER_NAME " HIP backend requires 64-bit DMA mask\n");
+        printk(KERN_ERR DRIVER_NAME " dmabuf backend requires 64-bit DMA mask\n");
         pci_clear_master(dev);
         pci_disable_device(dev);
         pci_release_region(dev, 0);

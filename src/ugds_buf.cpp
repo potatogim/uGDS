@@ -50,7 +50,16 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         flags |= NVM_MAP_RDMA;
     }
     if (config->backend == UGDS_BACKEND_HIP) {
+#ifndef _HIP
+        return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
+#else
         flags |= NVM_MAP_DMABUF;
+#endif
+    }
+    if (config->backend == UGDS_BACKEND_CUDA) {
+#ifndef _CUDA
+        return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
+#endif
     }
 
     return uGDSBufRegister(bufPtr_base, length, flags);
