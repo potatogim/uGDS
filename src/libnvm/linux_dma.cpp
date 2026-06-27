@@ -17,11 +17,18 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include "internal/lib_util.h"
 #include "internal/lib_ctrl.h"
 #include "internal/dma.h"
 #include "internal/map.h"
 #include "internal/dprintf.h"
+
+#ifdef _CUDA
+#ifdef HAVE_CUDA_DMABUF
+#include <cuda.h>
+#endif
+#endif
 
 
 static int posix_close_adapter(int fd)
@@ -357,11 +364,125 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
     {
         if (flags & NVM_MAP_RDMA)
         {
-            /* CUDA dma-buf export path for RDMA */
 #ifdef HAVE_CUDA_DMABUF
-            /* Validation + export will be added in Phase 2 */
-            dprintf("CUDA dma-buf RDMA export not yet implemented\n");
-            return ENOTSUP;
+            /* CUDA dma-buf export path for RDMA.
+             * Full validation chain per approved design plan v8: */
+
+            CUdevice cu_dev;
+            int dma_buf_supported = 0;
+            CUresult cu_err;
+
+            /* Step 1: device attribute */
+            cu_err = cuCtxGetDevice(&cu_dev);
+            if (cu_err != CUDA_SUCCESS) {
+                dprintf("cuCtxGetDevice failed: %d\n", cu_err);
+                return EIO;
+            }
+            cu_err = cuDeviceGetAttribute(&dma_buf_supported,
+                CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, cu_dev);
+            if (cu_err != CUDA_SUCCESS || !dma_buf_supported) {
+                dprintf("CUDA device does not support dma-buf export\n");
+                return ENOTSUP;
+            }
+
+            /* Step 2: pointer type validation */
+            unsigned int mem_type = 0;
+            cu_err = cuPointerGetAttribute(&mem_type,
+                CU_POINTER_ATTRIBUTE_MEMORY_TYPE, (CUdeviceptr)devptr);
+            if (cu_err != CUDA_SUCCESS) {
+                dprintf("cuPointerGetAttribute(MEMORY_TYPE) failed: %d\n", cu_err);
+                return EIO;
+            }
+            if (mem_type != CU_MEMORYTYPE_DEVICE) {
+                dprintf("Pointer %p is not device memory (type=%u)\n", devptr, mem_type);
+                return EINVAL;
+            }
+
+            /* Step 3: reject managed memory */
+            int is_managed = 0;
+            cu_err = cuPointerGetAttribute(&is_managed,
+                CU_POINTER_ATTRIBUTE_IS_MANAGED, (CUdeviceptr)devptr);
+            if (cu_err == CUDA_SUCCESS && is_managed) {
+                dprintf("Managed memory not supported for GPUDirect RDMA\n");
+                return EINVAL;
+            }
+
+            /* Step 4: allocation range + host page alignment */
+            CUdeviceptr base_ptr;
+            size_t alloc_size;
+            cu_err = cuMemGetAddressRange(&base_ptr, &alloc_size,
+                                          (CUdeviceptr)devptr);
+            if (cu_err != CUDA_SUCCESS) {
+                dprintf("cuMemGetAddressRange failed: %d\n", cu_err);
+                return EIO;
+            }
+
+            long hps = sysconf(_SC_PAGESIZE);
+            if (hps <= 0) {
+                dprintf("sysconf(_SC_PAGESIZE) failed\n");
+                return EINVAL;
+            }
+            size_t offset_in_alloc = (uintptr_t)devptr - (uintptr_t)base_ptr;
+            size_t aligned_size = (size + hps - 1) & ~((size_t)hps - 1);
+
+            if (offset_in_alloc + aligned_size > alloc_size) {
+                dprintf("Buffer range %p+%zu exceeds CUDA allocation %p+%zu\n",
+                        devptr, size, (void*)base_ptr, alloc_size);
+                return EIO;
+            }
+            if ((uintptr_t)devptr % (size_t)hps != 0) {
+                dprintf("CUDA pointer %p not host-page-aligned (%ld)\n", devptr, hps);
+                return EINVAL;
+            }
+
+            /* Step 5: export with PCIe BAR mapping flag */
+            dmabuf_fd = -1;
+            cu_err = cuMemGetHandleForAddressRange(
+                (void*)&dmabuf_fd,
+                (CUdeviceptr)devptr,
+                aligned_size,
+                CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+                CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE);
+
+            if (cu_err != CUDA_SUCCESS || dmabuf_fd < 0) {
+                dprintf("cuMemGetHandleForAddressRange failed: %d\n", cu_err);
+                return EIO;
+            }
+            dmabuf_offset = 0;
+
+            /* Step 6: FD_CLOEXEC */
+            int fd_flags = fcntl(dmabuf_fd, F_GETFD);
+            if (fd_flags < 0 ||
+                fcntl(dmabuf_fd, F_SETFD, fd_flags | FD_CLOEXEC) < 0) {
+                dprintf("failed to set FD_CLOEXEC on CUDA dmabuf fd: %s\n",
+                        strerror(errno));
+                close(dmabuf_fd);
+                return EIO;
+            }
+
+            /* Step 7: SYNC_MEMOPS — fatal for RDMA (BAR consistency) */
+            int sync_val = 1;
+            cu_err = cuPointerSetAttribute(&sync_val,
+                CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, (CUdeviceptr)devptr);
+            if (cu_err != CUDA_SUCCESS) {
+                dprintf("cuPointerSetAttribute(SYNC_MEMOPS) failed: %d — "
+                        "required for GPUDirect RDMA consistency\n", cu_err);
+                close(dmabuf_fd);
+                return EIO;
+            }
+
+            /* Create mapping with host PAGE_SIZE (not 64KiB) */
+            err = create_mapping_descriptor(&md, (size_t)hps,
+                                            MAP_TYPE_DMABUF_CUDA, devptr, size);
+            if (err != 0) {
+                close(dmabuf_fd);
+                return err;
+            }
+
+            md->dmabuf_fd = dmabuf_fd;
+            md->dmabuf_offset = 0;
+            md->retain_fd = true;
+            md->close_fn = posix_close_adapter;
 #else
             dprintf("CUDA dma-buf export not compiled in (HAVE_CUDA_DMABUF undefined)\n");
             return ENOTSUP;
@@ -418,6 +539,17 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
                 dmabuf_fd, md->dmabuf_offset,
                 md->range.page_size * md->range.n_pages);
         }
+    }
+#endif
+
+#ifdef _CUDA
+    /* CUDA dmabuf: fd is always retained (RDMA-only path).
+     * Set map metadata with live fd. */
+    if (md->type == MAP_TYPE_DMABUF_CUDA)
+    {
+        _nvm_dma_set_dmabuf_info(*handle,
+            dmabuf_fd, 0,
+            md->range.page_size * md->range.n_pages);
     }
 #endif
 

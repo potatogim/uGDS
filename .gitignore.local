@@ -1,2 +1,5 @@
 .agora/
-.omc/
+*.o
+build/
+build/
+build-rdma/
