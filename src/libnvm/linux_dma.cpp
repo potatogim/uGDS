@@ -24,12 +24,24 @@
 #include "internal/dprintf.h"
 
 
+static int posix_close_adapter(int fd)
+{
+    return close(fd);
+}
+
 
 static void remove_mapping_descriptor(struct ioctl_mapping* md)
 {
     if (md->type == MAP_TYPE_API)
     {
         free((void*) md->buffer);
+    }
+
+    /* Close retained dmabuf fd exactly once via typed adapter */
+    if (md->retain_fd && md->dmabuf_fd >= 0 && md->close_fn != NULL)
+    {
+        md->close_fn(md->dmabuf_fd);
+        md->dmabuf_fd = -1;  /* prevent double-close */
     }
 
     free(md);
@@ -67,6 +79,8 @@ static int create_mapping_descriptor(struct ioctl_mapping** handle, size_t page_
     md->range.n_pages = n_pages;
     md->dmabuf_fd = -1;
     md->dmabuf_offset = 0;
+    md->retain_fd = false;
+    md->close_fn = NULL;
 
     *handle = md;
     return 0;
@@ -157,6 +171,12 @@ int nvm_dma_map_host(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* vaddr, si
 #include <hsa/hsa_ext_amd.h>
 #include <hip/hip_runtime_api.h>
 
+static int hsa_dmabuf_close_adapter(int fd)
+{
+    hsa_status_t s = hsa_amd_portable_close_dmabuf(fd);
+    return (s == HSA_STATUS_SUCCESS) ? 0 : -1;
+}
+
 /* Use runtime page size -- must match kernel PAGE_SIZE for ioctl contract.
  * Thread-safe initialization via C++11 function-local static. */
 static long hip_page_size()
@@ -189,7 +209,7 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
 #endif
 
     /* Reject unknown flags */
-    if (flags & ~NVM_MAP_DMABUF)
+    if (flags & ~(NVM_MAP_DMABUF | NVM_MAP_RDMA))
     {
         dprintf("nvm_dma_map_device: unknown flags 0x%x\n", flags);
         return EINVAL;
@@ -322,17 +342,39 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
 
         md->dmabuf_fd = dmabuf_fd;
         md->dmabuf_offset = dmabuf_offset;
+
+        /* RDMA: retain fd for later export; set typed close adapter */
+        if (flags & NVM_MAP_RDMA)
+        {
+            md->retain_fd = true;
+            md->close_fn = hsa_dmabuf_close_adapter;
+        }
     }
 #endif /* _HIP */
 
 #ifdef _CUDA
     if (!use_hip)
     {
-        /* NVIDIA CUDA path */
-        err = create_mapping_descriptor(&md, 1ULL << 16, MAP_TYPE_CUDA, devptr, size);
-        if (err != 0)
+        if (flags & NVM_MAP_RDMA)
         {
-            return err;
+            /* CUDA dma-buf export path for RDMA */
+#ifdef HAVE_CUDA_DMABUF
+            /* Validation + export will be added in Phase 2 */
+            dprintf("CUDA dma-buf RDMA export not yet implemented\n");
+            return ENOTSUP;
+#else
+            dprintf("CUDA dma-buf export not compiled in (HAVE_CUDA_DMABUF undefined)\n");
+            return ENOTSUP;
+#endif
+        }
+        else
+        {
+            /* Standard NVIDIA CUDA path via kernel P2P */
+            err = create_mapping_descriptor(&md, 1ULL << 16, MAP_TYPE_CUDA, devptr, size);
+            if (err != 0)
+            {
+                return err;
+            }
         }
     }
 #endif /* _CUDA */
@@ -340,11 +382,13 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
     err = _nvm_dma_init(handle, ctrl, &md->range, &release_mapping_descriptor);
     if (err != 0)
     {
-        /* Save type before free -- remove_mapping_descriptor frees md */
+        /* Ownership transferred to md. remove_mapping_descriptor will close
+         * fd if retain_fd. Only close here if NOT retained (old behavior). */
         enum mapping_type saved_type = md->type;
+        bool was_retained = md->retain_fd;
         remove_mapping_descriptor(md);
 #ifdef _HIP
-        if (saved_type == MAP_TYPE_DMABUF && dmabuf_fd >= 0)
+        if (saved_type == MAP_TYPE_DMABUF && !was_retained && dmabuf_fd >= 0)
             hsa_amd_portable_close_dmabuf(dmabuf_fd);
 #endif
         return err;
@@ -353,15 +397,26 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
 #ifdef _HIP
     if (md->type == MAP_TYPE_DMABUF)
     {
-        /* Kernel holds its own refcount via dma_buf_get().
-         * Close userspace fd via HSA runtime API. */
-        hsa_status_t close_status = hsa_amd_portable_close_dmabuf(dmabuf_fd);
-        if (close_status != HSA_STATUS_SUCCESS) {
-            dprintf("hsa_amd_portable_close_dmabuf() failed: %d\n", close_status);
-            /* Unmap and release the handle we just initialized */
-            nvm_dma_unmap(*handle);
-            *handle = NULL;
-            return EIO;
+        if (!md->retain_fd)
+        {
+            /* Non-RDMA: kernel holds refcount, close userspace fd */
+            hsa_status_t close_status = hsa_amd_portable_close_dmabuf(dmabuf_fd);
+            if (close_status != HSA_STATUS_SUCCESS) {
+                dprintf("hsa_amd_portable_close_dmabuf() failed: %d\n", close_status);
+                /* Unmap and release the handle we just initialized */
+                nvm_dma_unmap(*handle);
+                *handle = NULL;
+                return EIO;
+            }
+            md->dmabuf_fd = -1;  /* cleared */
+            _nvm_dma_set_dmabuf_info(*handle, -1, 0, 0);
+        }
+        else
+        {
+            /* RDMA: fd retained. Set map metadata with live fd. */
+            _nvm_dma_set_dmabuf_info(*handle,
+                dmabuf_fd, md->dmabuf_offset,
+                md->range.page_size * md->range.n_pages);
         }
     }
 #endif

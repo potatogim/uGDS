@@ -26,6 +26,7 @@ set(UGDS_CUDA_ARCHITECTURES "80;90")
 if(UGDS_BACKEND_CUDA)
     find_package(CUDAToolkit REQUIRED)
     set(UGDS_CUDA_INCLUDES ${CUDAToolkit_INCLUDE_DIRS})
+    list(APPEND UGDS_CUDA_LIBS CUDA::cudart CUDA::cuda_driver)
 endif()
 
 # - HIP backend setup (independent) ------------
@@ -85,6 +86,32 @@ if(NOT UGDS_BACKEND_CUDA AND NOT UGDS_BACKEND_HIP)
     message(WARNING "No GPU backend selected, building library only")
 endif()
 
+# - RDMA support (optional) --------------------
+option(UGDS_ENABLE_RDMA "Enable tracked RDMA convenience API (libibverbs)" OFF)
+
+if(UGDS_ENABLE_RDMA)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(IBVERBS REQUIRED libibverbs)
+endif()
+
+# - CUDA dma-buf detection ----------------------
+if(UGDS_BACKEND_CUDA)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_INCLUDES "${UGDS_CUDA_INCLUDES}")
+    set(CMAKE_REQUIRED_LIBRARIES "${UGDS_CUDA_LIBS}")
+    check_cxx_source_compiles("
+        #include <cuda.h>
+        int main() {
+            int fd; void* h = &fd;
+            cuMemGetHandleForAddressRange(h, (CUdeviceptr)0, 0,
+                CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+                CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE);
+            return 0;
+        }" HAVE_CUDA_DMABUF)
+    set(CMAKE_REQUIRED_INCLUDES)
+    set(CMAKE_REQUIRED_LIBRARIES)
+endif()
+
 # Library sources
 set(UGDS_SOURCES
     src/libnvm/admin.cpp
@@ -102,6 +129,10 @@ set(UGDS_SOURCES
     src/ugds_io.cpp
 )
 
+if(UGDS_ENABLE_RDMA)
+    list(APPEND UGDS_SOURCES src/ugds_rdma.cpp)
+endif()
+
 add_library(ugds SHARED ${UGDS_SOURCES})
 
 target_include_directories(ugds
@@ -114,16 +145,31 @@ target_include_directories(ugds
 if(UGDS_BACKEND_CUDA)
     target_include_directories(ugds PRIVATE ${UGDS_CUDA_INCLUDES})
     target_compile_definitions(ugds PRIVATE _CUDA)
-    target_link_libraries(ugds PRIVATE CUDA::cudart)
+    target_link_libraries(ugds PRIVATE ${UGDS_CUDA_LIBS})
+    if(HAVE_CUDA_DMABUF)
+        target_compile_definitions(ugds PRIVATE HAVE_CUDA_DMABUF)
+    endif()
 endif()
 
 if(UGDS_BACKEND_HIP)
     target_include_directories(ugds PRIVATE ${UGDS_HIP_INCLUDES})
     target_link_libraries(ugds PRIVATE ${UGDS_HIP_LIBS})
-    target_compile_definitions(ugds PRIVATE _HIP)
+    target_compile_definitions(ugds PRIVATE _HIP __HIP_PLATFORM_AMD__)
     if(HAVE_HSA_DMABUF_V2)
         target_compile_definitions(ugds PRIVATE HAVE_HSA_DMABUF_V2)
     endif()
+endif()
+
+# UGDS_HAVE_DMABUF: unified dmabuf guard (HIP or CUDA-dmabuf)
+if(UGDS_BACKEND_HIP OR (UGDS_BACKEND_CUDA AND HAVE_CUDA_DMABUF))
+    target_compile_definitions(ugds PRIVATE UGDS_HAVE_DMABUF)
+endif()
+
+# RDMA support
+if(UGDS_ENABLE_RDMA)
+    target_include_directories(ugds PRIVATE ${IBVERBS_INCLUDE_DIRS})
+    target_link_libraries(ugds PRIVATE ${IBVERBS_LIBRARIES})
+    target_compile_definitions(ugds PRIVATE _RDMA)
 endif()
 
 target_link_libraries(ugds PRIVATE Threads::Threads)
