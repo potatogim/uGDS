@@ -368,12 +368,15 @@ static int add_pci_dev(struct pci_dev* dev, const struct pci_device_id* id)
         return -EIO;
     }
 #elif defined(UGDS_HAVE_DMABUF)
-    /* CUDA dmabuf: 64-bit DMA preferred but not mandatory.
-     * Non-dmabuf CUDA P2P (nvidia_p2p_get_pages) doesn't need this. */
+    /* CUDA dmabuf: 64-bit DMA is required for P2P VRAM addresses. */
     if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(64)))
     {
-        printk(KERN_WARNING DRIVER_NAME " 64-bit DMA mask not available, "
-               "dmabuf P2P may not work\n");
+        printk(KERN_ERR DRIVER_NAME " dmabuf backend requires 64-bit DMA mask\n");
+        pci_clear_master(dev);
+        pci_disable_device(dev);
+        pci_release_region(dev, 0);
+        ctrl_put(ctrl);
+        return -EIO;
     }
 #endif
 

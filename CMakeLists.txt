@@ -203,6 +203,10 @@ set(FUNCTIONAL_TESTS
     test_async_late_binding
     test_async_errors
     test_async_multi_stream
+)
+
+# RDMA/dmabuf tests — only built/run when RDMA is enabled
+set(RDMA_TESTS
     test_rdma_export
     test_rdma_tracked
 )
@@ -234,12 +238,27 @@ if(UGDS_BACKEND_CUDA)
                 CUDA_ARCHITECTURES "${UGDS_CUDA_ARCHITECTURES}"
                 BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
             )
-            # RDMA tests need _RDMA define and libibverbs
-            if(${test_name} STREQUAL "test_rdma_tracked" AND UGDS_ENABLE_RDMA)
-                target_compile_definitions(${test_name}${CUDA_SUFFIX} PRIVATE _RDMA)
-                target_link_libraries(${test_name}${CUDA_SUFFIX} PkgConfig::IBVERBS)
-            endif()
         endforeach()
+
+        # RDMA tests (only when UGDS_ENABLE_RDMA is ON)
+        if(UGDS_ENABLE_RDMA)
+            foreach(test_name ${RDMA_TESTS})
+                set(test_src ${CMAKE_CURRENT_SOURCE_DIR}/test/functional/${test_name}.cu)
+                add_executable(${test_name}${CUDA_SUFFIX} ${test_src})
+                target_include_directories(${test_name}${CUDA_SUFFIX} PRIVATE
+                    ${CMAKE_CURRENT_SOURCE_DIR}/include
+                    ${CMAKE_CURRENT_SOURCE_DIR}/test/functional
+                )
+                target_link_libraries(${test_name}${CUDA_SUFFIX} ugds CUDA::cudart PkgConfig::IBVERBS)
+                set_target_properties(${test_name}${CUDA_SUFFIX} PROPERTIES
+                    CUDA_ARCHITECTURES "${UGDS_CUDA_ARCHITECTURES}"
+                    BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
+                )
+                if(${test_name} STREQUAL "test_rdma_tracked")
+                    target_compile_definitions(${test_name}${CUDA_SUFFIX} PRIVATE _RDMA)
+                endif()
+            endforeach()
+        endif()
 
         # bench_ugds (CUDA)
         set(bench_src ${CMAKE_CURRENT_SOURCE_DIR}/test/perf/cufile_bench.cu)
@@ -315,12 +334,36 @@ if(UGDS_BACKEND_HIP)
                 HIP_ARCHITECTURES "${UGDS_HIP_ARCHITECTURES}"
                 BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
             )
-            # RDMA tests need _RDMA define and libibverbs
-            if(${test_name} STREQUAL "test_rdma_tracked" AND UGDS_ENABLE_RDMA)
-                target_compile_definitions(${test_name}${HIP_SUFFIX} PRIVATE _RDMA)
-                target_link_libraries(${test_name}${HIP_SUFFIX} PkgConfig::IBVERBS)
-            endif()
         endforeach()
+
+        # RDMA tests (only when UGDS_ENABLE_RDMA is ON)
+        if(UGDS_ENABLE_RDMA)
+            foreach(test_name ${RDMA_TESTS})
+                set(test_src ${CMAKE_CURRENT_SOURCE_DIR}/test/functional/${test_name}.cu)
+                if(UGDS_BACKEND_CUDA)
+                    set(hip_src ${CMAKE_CURRENT_BINARY_DIR}/${test_name}.hip.cu)
+                    configure_file(${test_src} ${hip_src} COPYONLY)
+                    set_source_files_properties(${hip_src} PROPERTIES LANGUAGE HIP)
+                    add_executable(${test_name}${HIP_SUFFIX} ${hip_src})
+                else()
+                    set_source_files_properties(${test_src} PROPERTIES LANGUAGE HIP)
+                    add_executable(${test_name}${HIP_SUFFIX} ${test_src})
+                endif()
+                target_include_directories(${test_name}${HIP_SUFFIX} PRIVATE
+                    ${CMAKE_CURRENT_SOURCE_DIR}/include
+                    ${CMAKE_CURRENT_SOURCE_DIR}/test/functional
+                )
+                target_link_libraries(${test_name}${HIP_SUFFIX} ugds ${UGDS_HIP_LIBS} PkgConfig::IBVERBS)
+                target_compile_definitions(${test_name}${HIP_SUFFIX} PRIVATE __HIP_PLATFORM_AMD__)
+                set_target_properties(${test_name}${HIP_SUFFIX} PROPERTIES
+                    HIP_ARCHITECTURES "${UGDS_HIP_ARCHITECTURES}"
+                    BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
+                )
+                if(${test_name} STREQUAL "test_rdma_tracked")
+                    target_compile_definitions(${test_name}${HIP_SUFFIX} PRIVATE _RDMA)
+                endif()
+            endforeach()
+        endif()
 
         # bench_ugds (HIP)
         set(bench_src_orig ${CMAKE_CURRENT_SOURCE_DIR}/test/perf/cufile_bench.cu)

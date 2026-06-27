@@ -1,4 +1,5 @@
 #include "ugds_internal.h"
+#include "internal/dma.h"
 #include <unistd.h>
 #include <fcntl.h>
 
