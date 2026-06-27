@@ -31,7 +31,10 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
         return make_error(UGDS_GPU_MEMORY_PINNING_FAILED);
     }
 
-    g_driver.buf_registry[bufPtr_base] = { dma, UGDS_BACKEND_DEFAULT };
+    g_driver.buf_registry[bufPtr_base] = {
+        dma,
+        (flags & NVM_MAP_DMABUF) ? UGDS_BACKEND_HIP : UGDS_BACKEND_DEFAULT
+    };
     return UGDS_OK;
 }
 
