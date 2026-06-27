@@ -90,6 +90,8 @@ endif()
 # - RDMA support (optional) --------------------
 option(UGDS_ENABLE_RDMA "Enable tracked RDMA convenience API (libibverbs)" OFF)
 
+include(CheckCXXSourceCompiles)
+
 if(UGDS_ENABLE_RDMA)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(IBVERBS REQUIRED IMPORTED_TARGET libibverbs)

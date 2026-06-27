@@ -60,8 +60,9 @@ All GPU memory accessors are classified as **producers** (write to GPU VRAM) or 
 
 For **RDMA** buffers (registered with `enable_rdma=1`), additional lifetime rules apply:
 - All RDMA completions (`ibv_poll_cq`) and `ibv_dereg_mr()` MUST complete before `uGDSBufDeregister()`.
-- If using `uGDSRDMARegister()` (tracked API), `uGDSBufDeregister()` will fail with `UGDS_RDMA_MR_STILL_ACTIVE` if MRs are still registered.
-- `uGDSDriverClose()` also fails with `UGDS_RDMA_MR_STILL_ACTIVE` if any RDMA MRs are outstanding.
+- If using the tracked API (`uGDSRDMARegister()`), `uGDSBufDeregister()` will fail with `UGDS_RDMA_MR_STILL_ACTIVE` if MRs are still registered.
+- If using the raw export API (`uGDSExportDmabuf()`), uGDS does not track MRs — the caller is responsible for ensuring all MRs are deregistered before calling `uGDSBufDeregister()`.
+- `uGDSDriverClose()` fails with `UGDS_RDMA_MR_STILL_ACTIVE` if any tracked MRs are outstanding.
 
 **Important:** Each backend used at runtime must be enabled in both the kernel module and the userspace library. For example, a CUDA-only kernel module will reject HIP `uGDSBufRegister()` calls. In dual-backend builds, use `uGDSBufRegisterEx()` with explicit `uGDSBackend_t`.
 
