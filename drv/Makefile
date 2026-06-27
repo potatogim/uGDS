@@ -53,20 +53,15 @@ ifneq ($(KERNELRELEASE),)
  endif
 
 	# dmabuf backend available when HIP is enabled, or when CUDA
-	# is enabled (CUDA 11.7+ supports dma-buf export). The userspace
-	# CMake gates this with check_cxx_source_compiles, but the kernel
-	# Makefile cannot run that check. Users can override with
-	# HAVE_CUDA_DMABUF=0 to disable.
+	# explicitly requests it via HAVE_CUDA_DMABUF=1. The userspace
+	# CMake detects this with check_cxx_source_compiles. Pass the same
+	# flag to the kernel build: make BUILD_CUDA=1 HAVE_CUDA_DMABUF=1
 UGDS_HAVE_DMABUF := 0
 ifeq ($(BUILD_HIP),1)
   UGDS_HAVE_DMABUF := 1
 endif
 ifdef HAVE_CUDA_DMABUF
   ifneq ($(HAVE_CUDA_DMABUF),0)
-    UGDS_HAVE_DMABUF := 1
-  endif
-else
-  ifeq ($(ENABLE_CUDA),1)
     UGDS_HAVE_DMABUF := 1
   endif
 endif

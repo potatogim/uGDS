@@ -92,7 +92,7 @@ option(UGDS_ENABLE_RDMA "Enable tracked RDMA convenience API (libibverbs)" OFF)
 
 if(UGDS_ENABLE_RDMA)
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(IBVERBS REQUIRED libibverbs)
+    pkg_check_modules(IBVERBS REQUIRED IMPORTED_TARGET libibverbs)
 endif()
 
 # - CUDA dma-buf detection ----------------------
@@ -167,8 +167,7 @@ endif()
 
 # RDMA support
 if(UGDS_ENABLE_RDMA)
-    target_include_directories(ugds PRIVATE ${IBVERBS_INCLUDE_DIRS})
-    target_link_libraries(ugds PRIVATE ${IBVERBS_LIBRARIES})
+    target_link_libraries(ugds PRIVATE PkgConfig::IBVERBS)
     target_compile_definitions(ugds PRIVATE _RDMA)
 endif()
 
@@ -231,7 +230,7 @@ if(UGDS_BACKEND_CUDA)
             # RDMA tests need _RDMA define and libibverbs
             if(${test_name} STREQUAL "test_rdma_tracked" AND UGDS_ENABLE_RDMA)
                 target_compile_definitions(${test_name}${CUDA_SUFFIX} PRIVATE _RDMA)
-                target_link_libraries(${test_name}${CUDA_SUFFIX} ${IBVERBS_LIBRARIES})
+                target_link_libraries(${test_name}${CUDA_SUFFIX} PkgConfig::IBVERBS)
             endif()
         endforeach()
 
@@ -312,7 +311,7 @@ if(UGDS_BACKEND_HIP)
             # RDMA tests need _RDMA define and libibverbs
             if(${test_name} STREQUAL "test_rdma_tracked" AND UGDS_ENABLE_RDMA)
                 target_compile_definitions(${test_name}${HIP_SUFFIX} PRIVATE _RDMA)
-                target_link_libraries(${test_name}${HIP_SUFFIX} ${IBVERBS_LIBRARIES})
+                target_link_libraries(${test_name}${HIP_SUFFIX} PkgConfig::IBVERBS)
             endif()
         endforeach()
 
@@ -356,7 +355,7 @@ if(UGDS_ENABLE_RDMA AND UGDS_BACKEND_CUDA)
         target_include_directories(rdma_example PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/include
         )
-        target_link_libraries(rdma_example ugds ${UGDS_CUDA_LIBS} ${IBVERBS_LIBRARIES})
+        target_link_libraries(rdma_example ugds ${UGDS_CUDA_LIBS} PkgConfig::IBVERBS)
         target_compile_definitions(rdma_example PRIVATE UGDS_ENABLE_RDMA)
         set_target_properties(rdma_example PROPERTIES
             CUDA_ARCHITECTURES "${UGDS_CUDA_ARCHITECTURES}"
