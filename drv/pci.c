@@ -125,11 +125,12 @@ static long map_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
             {
                 if (copy_to_user((void __user*) request.ioaddrs, map->addrs, map->n_addrs * sizeof(uint64_t)))
                 {
+                    unmap_and_release(map);
                     return -EFAULT;
                 }
                 retval = 0;
             }
-            else 
+            else
             {
                 retval = PTR_ERR(map);
             }
@@ -148,6 +149,7 @@ static long map_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
             {
                 if (copy_to_user((void __user*) request.ioaddrs, map->addrs, map->n_addrs * sizeof(uint64_t)))
                 {
+                    unmap_and_release(map);
                     return -EFAULT;
                 }
                 retval = 0;
