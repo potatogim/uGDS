@@ -98,9 +98,31 @@ extern "C" uGDSError_t uGDSStreamDeregister(cudaStream_t stream)
     return UGDS_OK;
 }
 
-/* ── Backend-specific host function launch ── */
+/* ── Backend-specific host function launch ──
+ * In dual-backend builds (_CUDA + __HIP_PLATFORM_AMD__), HIP takes
+ * priority because the HIP compatibility layer maps cuda* names to
+ * hip* equivalents, and the stream passed by HIP callers is a
+ * hipStream_t (which cudaLaunchHostFunc would not understand). */
 
-#if defined(_CUDA) || defined(__CUDACC__)
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_runtime_api.h>
+
+static uGDSError_t async_launch_host_func(cudaStream_t stream,
+                                           AsyncRequest* req, uint8_t opcode)
+{
+    (void)opcode;
+    hipError_t err = hipLaunchHostFunc(stream, async_io_callback, req);
+    if (err != hipSuccess) {
+        delete req;
+        uGDSError_t e;
+        e.err = UGDS_CUDA_DRIVER_ERROR;
+        e.cu_err = static_cast<int>(err);
+        return e;
+    }
+    return UGDS_OK;
+}
+
+#elif defined(_CUDA) || defined(__CUDACC__)
 #include <cuda_runtime.h>
 
 static uGDSError_t async_launch_host_func(cudaStream_t stream,

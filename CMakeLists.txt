@@ -127,11 +127,10 @@ set(UGDS_SOURCES
     src/ugds_handle.cpp
     src/ugds_buf.cpp
     src/ugds_io.cpp
+    src/ugds_batch.cpp
+    src/ugds_async.cpp
+    src/ugds_rdma.cpp
 )
-
-if(UGDS_ENABLE_RDMA)
-    list(APPEND UGDS_SOURCES src/ugds_rdma.cpp)
-endif()
 
 add_library(ugds SHARED ${UGDS_SOURCES})
 

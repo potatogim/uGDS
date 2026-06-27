@@ -167,14 +167,15 @@ typedef struct uGDSDmabufExport {
 uGDSError_t uGDSExportDmabuf(const void* bufPtr_base,
                               uGDSDmabufExport_t* out);
 
-#ifdef _RDMA
 /* Tracked RDMA MR API — uGDS manages ibv_dereg_mr internally.
- * Requires UGDS_ENABLE_RDMA=ON at build time.
+ *
+ * When UGDS_ENABLE_RDMA=ON at build time, these call ibv_reg_dmabuf_mr /
+ * ibv_dereg_mr. When RDMA is not enabled, they return UGDS_IO_NOT_SUPPORTED.
  *
  * PRECONDITION for uGDSRDMAUnregister: all Work Requests referencing
  * this MR must have completed (QP drained). uGDS cannot verify this. */
 
-/* Forward declaration — ibv_pd is opaque to non-RDMA builds */
+/* Forward declaration — ibv_pd is opaque */
 struct ibv_pd;
 
 typedef struct uGDSRDMARegion {
@@ -191,7 +192,6 @@ uGDSError_t uGDSRDMARegister(const void* bufPtr_base,
 /* Calls ibv_dereg_mr exactly once. Caller must NOT call ibv_dereg_mr. */
 uGDSError_t uGDSRDMAUnregister(const void* bufPtr_base,
                                 uGDSRDMARegion_t* region);
-#endif /* _RDMA */
 
 ssize_t uGDSRead(uGDSHandle_t fh, void* bufPtr_base, size_t size,
                    off_t file_offset, off_t bufPtr_offset);

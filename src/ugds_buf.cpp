@@ -26,6 +26,8 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
                                        const_cast<void*>(bufPtr_base), length,
                                        flags);
     if (status != 0 || dma == nullptr) {
+        if (status == ENOTSUP)
+            return make_error(UGDS_IO_NOT_SUPPORTED);
         return make_error(UGDS_GPU_MEMORY_PINNING_FAILED);
     }
 
