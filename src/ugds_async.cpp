@@ -1,13 +1,10 @@
 #include "ugds_internal.h"
 #include <mutex>
 
-/* Backend-neutral async IO logic.
- * The public API uses cudaStream_t (which is typedef'd in ugds.h based
- * on the active backend). Internally we cast to void* and dispatch to
- * the correct backend launch function. */
-
-/* Internal stream type — always void* to avoid backend type conflicts */
-typedef void* ugsd_stream_t;
+/* Backend-neutral async IO.
+ * Public API accepts void* for stream — callers pass cudaStream_t
+ * or hipStream_t, which implicitly convert. Internal dispatch
+ * selects the correct backend launch function at compile time. */
 
 static void async_io_callback(void* userData)
 {
@@ -22,7 +19,6 @@ static void async_io_callback(void* userData)
     delete req;
 }
 
-/* Validate and create async request */
 static uGDSError_t async_validate(uGDSHandle_t fh, void* bufPtr_base,
                                    size_t* size_p, off_t* file_offset_p,
                                    off_t* bufPtr_offset_p, ssize_t* bytes_done_p)
@@ -54,8 +50,8 @@ static AsyncRequest* make_async_request(uGDSHandle_t fh, void* bufPtr_base,
 }
 
 /* ── Backend-specific host function launch ──
- * Uses ugsd_stream_t (void*) internally to avoid type conflicts between
- * cudaStream_t and hipStream_t in dual-backend builds. */
+ * Uses ugsd_stream_t (void*) internally. Each backend casts to its
+ * native stream type before calling the runtime API. */
 
 #if defined(__HIP_PLATFORM_AMD__)
 #include <hip/hip_runtime_api.h>
@@ -106,10 +102,12 @@ static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
 }
 #endif
 
+/* ── Public async API (void* stream for dual-backend support) ── */
+
 extern "C" uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void* bufPtr_base,
                                        size_t* size_p, off_t* file_offset_p,
                                        off_t* bufPtr_offset_p, ssize_t* bytes_read_p,
-                                       cudaStream_t stream)
+                                       void* stream)
 {
     uGDSError_t st = async_validate(fh, bufPtr_base, size_p, file_offset_p,
                                      bufPtr_offset_p, bytes_read_p);
@@ -123,7 +121,7 @@ extern "C" uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void* bufPtr_base,
 extern "C" uGDSError_t uGDSWriteAsync(uGDSHandle_t fh, void* bufPtr_base,
                                         size_t* size_p, off_t* file_offset_p,
                                         off_t* bufPtr_offset_p, ssize_t* bytes_written_p,
-                                        cudaStream_t stream)
+                                        void* stream)
 {
     uGDSError_t st = async_validate(fh, bufPtr_base, size_p, file_offset_p,
                                      bufPtr_offset_p, bytes_written_p);
@@ -134,13 +132,13 @@ extern "C" uGDSError_t uGDSWriteAsync(uGDSHandle_t fh, void* bufPtr_base,
     return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_WRITE);
 }
 
-extern "C" uGDSError_t uGDSStreamRegister(cudaStream_t stream)
+extern "C" uGDSError_t uGDSStreamRegister(void* stream)
 {
     (void)stream;
     return UGDS_OK;
 }
 
-extern "C" uGDSError_t uGDSStreamDeregister(cudaStream_t stream)
+extern "C" uGDSError_t uGDSStreamDeregister(void* stream)
 {
     (void)stream;
     return UGDS_OK;

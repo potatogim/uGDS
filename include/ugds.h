@@ -7,24 +7,17 @@
 #include <libnvm/nvm_dma.h>  /* NVM_MAP_DMABUF */
 #include <time.h>
 
-/* Conditional GPU runtime include — supports both CUDA and HIP.
- * _CUDA: CMake-defined (library build with g++)
- * __CUDACC__: defined by nvcc (test/application build)
- * __HIP_PLATFORM_AMD__: defined by hipcc */
-#if defined(_CUDA) || defined(__CUDACC__)
-#include <cuda_runtime.h>
-#elif defined(__HIP_PLATFORM_AMD__)
-#include <hip/hip_runtime_api.h>
-#define cudaStream_t hipStream_t
-#endif
+/* GPU runtime headers are NOT included in the public header.
+ * cuda_runtime.h and hip_runtime_api.h define conflicting types
+ * (vector types, stream types) that cannot coexist in a single TU.
+ *
+ * The async API uses void* for streams. Callers pass cudaStream_t
+ * (CUDA) or hipStream_t (HIP), which implicitly convert to void*.
+ * Backend-specific runtime headers are included only in internal
+ * source files that need them. */
 
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-/* Opaque stream type when no GPU SDK is present */
-#if !defined(_CUDA) && !defined(__CUDACC__) && !defined(__HIP_PLATFORM_AMD__)
-typedef void* cudaStream_t;
 #endif
 
 #define UGDS_BASE_ERR 5000
@@ -198,6 +191,73 @@ ssize_t uGDSRead(uGDSHandle_t fh, void* bufPtr_base, size_t size,
 
 ssize_t uGDSWrite(uGDSHandle_t fh, const void* bufPtr_base, size_t size,
                     off_t file_offset, off_t bufPtr_offset);
+
+/* ── Batch IO ── */
+
+typedef void* uGDSBatchHandle_t;
+
+typedef enum uGDSOpcode {
+    UGDS_READ  = 0,
+    UGDS_WRITE = 1,
+} uGDSOpcode_t;
+
+typedef enum uGDSBatchStatus {
+    UGDS_BATCH_WAITING   = 0x01,
+    UGDS_BATCH_PENDING   = 0x02,
+    UGDS_BATCH_INVALID   = 0x04,
+    UGDS_BATCH_COMPLETE  = 0x10,
+    UGDS_BATCH_TIMEOUT   = 0x20,
+    UGDS_BATCH_FAILED    = 0x40,
+} uGDSBatchStatus_t;
+
+typedef struct uGDSIOParams {
+    void*           devPtr_base;
+    off_t           file_offset;
+    off_t           devPtr_offset;
+    size_t          size;
+    uGDSOpcode_t    opcode;
+    void*           cookie;
+} uGDSIOParams_t;
+
+typedef struct uGDSIOEvents {
+    void*               cookie;
+    uGDSBatchStatus_t   status;
+    ssize_t             ret;
+} uGDSIOEvents_t;
+
+uGDSError_t uGDSBatchIOSetUp(uGDSBatchHandle_t* batch, uGDSHandle_t fh,
+                               unsigned nr);
+
+uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
+                               uGDSIOParams_t* iocb, unsigned flags);
+
+uGDSError_t uGDSBatchIOGetStatus(uGDSBatchHandle_t batch, unsigned min_nr,
+                                  unsigned* nr, uGDSIOEvents_t* events,
+                                  struct timespec* timeout);
+
+void uGDSBatchIODestroy(uGDSBatchHandle_t batch);
+
+/* ── Async Stream IO ──
+ * Pointer params (size_p, file_offset_p, etc.) must be host-accessible.
+ * Use cudaHostAlloc/hipHostMalloc for GPU-writable pinned memory (late binding).
+ *
+ * Stream parameter is void* to support both CUDA and HIP backends.
+ * Pass cudaStream_t (CUDA) or hipStream_t (HIP) — both implicitly
+ * convert to void*. */
+
+uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void *bufPtr_base,
+                           size_t *size_p, off_t *file_offset_p,
+                           off_t *bufPtr_offset_p, ssize_t *bytes_read_p,
+                           void* stream);
+
+uGDSError_t uGDSWriteAsync(uGDSHandle_t fh, void *bufPtr_base,
+                            size_t *size_p, off_t *file_offset_p,
+                            off_t *bufPtr_offset_p, ssize_t *bytes_written_p,
+                            void* stream);
+
+uGDSError_t uGDSStreamRegister(void* stream);
+
+uGDSError_t uGDSStreamDeregister(void* stream);
 
 #ifdef __cplusplus
 }

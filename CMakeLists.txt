@@ -11,7 +11,8 @@ find_package(Threads REQUIRED)
 option(UGDS_BACKEND_CUDA "Use NVIDIA CUDA backend" ON)
 option(UGDS_BACKEND_HIP  "Use AMD HIP backend"     OFF)
 
-# Both backends can be enabled simultaneously for dual-GPU systems.
+# Both backends can be enabled simultaneously. The async API uses void*
+# for stream parameters to avoid cudaStream_t/hipStream_t type conflicts.
 
 # HIP language support requires CMake >= 3.21
 if(UGDS_BACKEND_HIP AND CMAKE_VERSION VERSION_LESS "3.21")

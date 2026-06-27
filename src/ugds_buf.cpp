@@ -113,10 +113,11 @@ extern "C" uGDSError_t uGDSExportDmabuf(const void* bufPtr_base,
         return make_error(UGDS_INTERNAL_ERROR);
     }
 
-    /* Set FD_CLOEXEC on the dup'd fd */
+    /* Set FD_CLOEXEC on the dup'd fd — fail hard on error (security) */
     int fd_flags = fcntl(dup_fd, F_GETFD);
-    if (fd_flags >= 0) {
-        fcntl(dup_fd, F_SETFD, fd_flags | FD_CLOEXEC);
+    if (fd_flags < 0 || fcntl(dup_fd, F_SETFD, fd_flags | FD_CLOEXEC) < 0) {
+        close(dup_fd);
+        return make_error(UGDS_INTERNAL_ERROR);
     }
 
     out->fd     = dup_fd;

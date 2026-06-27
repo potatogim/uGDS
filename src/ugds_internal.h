@@ -169,7 +169,7 @@ struct AsyncRequest {
     uint8_t         opcode;
 };
 
-void* hugepage_alloc(size_t size, size_t* alloc_size_out);
-void  hugepage_free(void* ptr, size_t alloc_size);
+/* Internal stream type — void* for backend neutrality */
+typedef void* ugsd_stream_t;
 
 #endif /* __UGDS_INTERNAL_H__ */
