@@ -170,6 +170,7 @@ run_functional() {
         test_async_errors
         test_async_multi_stream
         test_rdma_export
+        test_rdma_tracked
     )
 
     for t in "${tests[@]}"; do

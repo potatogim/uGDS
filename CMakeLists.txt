@@ -198,6 +198,7 @@ set(FUNCTIONAL_TESTS
     test_async_errors
     test_async_multi_stream
     test_rdma_export
+    test_rdma_tracked
 )
 
 # CUDA tests (compiled with nvcc)
@@ -227,6 +228,11 @@ if(UGDS_BACKEND_CUDA)
                 CUDA_ARCHITECTURES "${UGDS_CUDA_ARCHITECTURES}"
                 BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
             )
+            # RDMA tests need _RDMA define and libibverbs
+            if(${test_name} STREQUAL "test_rdma_tracked" AND UGDS_ENABLE_RDMA)
+                target_compile_definitions(${test_name}${CUDA_SUFFIX} PRIVATE _RDMA)
+                target_link_libraries(${test_name}${CUDA_SUFFIX} ${IBVERBS_LIBRARIES})
+            endif()
         endforeach()
 
         # bench_ugds (CUDA)
@@ -336,15 +342,22 @@ if(NOT UGDS_BACKEND_CUDA AND NOT UGDS_BACKEND_HIP)
 endif()
 
 # - RDMA Example --------------------------------
+# Build only when CUDA compiler is available and RDMA is enabled
 if(UGDS_ENABLE_RDMA AND UGDS_BACKEND_CUDA)
-    add_executable(rdma_example examples/rdma_example.cu)
-    target_include_directories(rdma_example PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    target_link_libraries(rdma_example ugds ${UGDS_CUDA_LIBS} ${IBVERBS_LIBRARIES})
-    target_compile_definitions(rdma_example PRIVATE UGDS_ENABLE_RDMA)
-    set_target_properties(rdma_example PROPERTIES
-        CUDA_ARCHITECTURES "${UGDS_CUDA_ARCHITECTURES}"
-        BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
-    )
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        add_executable(rdma_example examples/rdma_example.cu)
+        target_include_directories(rdma_example PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        )
+        target_link_libraries(rdma_example ugds ${UGDS_CUDA_LIBS} ${IBVERBS_LIBRARIES})
+        target_compile_definitions(rdma_example PRIVATE UGDS_ENABLE_RDMA)
+        set_target_properties(rdma_example PROPERTIES
+            CUDA_ARCHITECTURES "${UGDS_CUDA_ARCHITECTURES}"
+            BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+    else()
+        message(WARNING "CUDA compiler not found, rdma_example will not be built")
+    endif()
 endif()
