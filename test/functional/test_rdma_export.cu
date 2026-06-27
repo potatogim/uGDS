@@ -1,5 +1,6 @@
 #include "test_utils.h"
 #include <sys/stat.h>
+#include <errno.h>
 
 /* Test: RDMA dmabuf export lifecycle
  *
