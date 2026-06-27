@@ -124,9 +124,16 @@ run_test() {
         printf "${G}PASS${N}\n"
         PASSED=$((PASSED + 1))
     else
-        printf "${R}FAIL${N}\n"
-        echo "$output" | tail -5 | sed 's/^/    /'
-        FAILED=$((FAILED + 1))
+        local rc=$?
+        if [ $rc -eq 77 ]; then
+            printf "${Y}SKIP${N}\n"
+            echo "$output" | tail -3 | sed 's/^/    /'
+            SKIPPED=$((SKIPPED + 1))
+        else
+            printf "${R}FAIL${N}\n"
+            echo "$output" | tail -5 | sed 's/^/    /'
+            FAILED=$((FAILED + 1))
+        fi
     fi
 }
 

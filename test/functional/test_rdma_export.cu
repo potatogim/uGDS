@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
             cudaFree(d_buf);
             close_handle(fh);
             uGDSDriverClose();
-            return 0;
+            return 77;  /* skip exit code (automake convention) */
         }
         TEST_FAIL("BufRegisterEx (RDMA): %s", UGDS_ERRSTR(st.err));
     }

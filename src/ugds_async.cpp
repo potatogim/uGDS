@@ -74,10 +74,20 @@ static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
 }
 
 #elif defined(_CUDA) || defined(__CUDACC__)
-/* CUDA-only build, or dual-backend: default to cudaLaunchHostFunc.
- * In dual-backend builds, CUDA is the primary async path.
- * HIP callers should use hipStreamSynchronize before uGDS async IO,
- * or build HIP-only to get hipLaunchHostFunc dispatch. */
+/* CUDA-only build, or dual-backend build.
+ *
+ * In dual-backend builds (_CUDA + __HIP_PLATFORM_AMD__), the async
+ * dispatch defaults to cudaLaunchHostFunc. This is a deliberate design
+ * choice: CUDA streams are the primary async path. HIP users in dual
+ * builds should use uGDS sync IO (uGDSRead/uGDSWrite) or synchronize
+ * the hipStream before calling async IO, or build HIP-only.
+ *
+ * The void* stream API (declared in ugds.h) accepts both cudaStream_t
+ * and hipStream_t via implicit pointer conversion. */
+#if defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
+#warning "Dual-backend build: async IO uses cudaLaunchHostFunc (CUDA primary). "
+#warning "HIP async IO requires HIP-only build for hipLaunchHostFunc dispatch."
+#endif
 #include <cuda_runtime.h>
 
 static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
