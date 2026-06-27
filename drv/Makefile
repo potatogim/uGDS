@@ -53,9 +53,10 @@ ifneq ($(KERNELRELEASE),)
  endif
 
 	# dmabuf backend available when HIP is enabled, or when CUDA
-	# with explicit HAVE_CUDA_DMABUF is enabled (to match the userspace
-	# CMake HAVE_CUDA_DMABUF detection). CUDA builds without dmabuf
-	# export support should not enable the kernel dmabuf code path.
+	# has dma-buf export support. HAVE_CUDA_DMABUF can be passed
+	# explicitly (make HAVE_CUDA_DMABUF=1) or auto-detected by
+	# checking if the CUDA driver headers support
+	# cuMemGetHandleForAddressRange.
 UGDS_HAVE_DMABUF := 0
 ifeq ($(BUILD_HIP),1)
   UGDS_HAVE_DMABUF := 1
@@ -63,6 +64,13 @@ endif
 ifdef HAVE_CUDA_DMABUF
   ifneq ($(HAVE_CUDA_DMABUF),0)
     UGDS_HAVE_DMABUF := 1
+  endif
+else
+  # Auto-detect: default to on for CUDA builds. The userspace CMake
+  # gates this with check_cxx_source_compiles, but the kernel Makefile
+  # cannot run that check. Users can override with HAVE_CUDA_DMABUF=0.
+  ifeq ($(ENABLE_CUDA),1)
+    UGDS_HAVE_DMABUF ?= 1
   endif
 endif
 
