@@ -111,6 +111,13 @@ if(UGDS_BACKEND_CUDA)
         }" HAVE_CUDA_DMABUF)
     set(CMAKE_REQUIRED_INCLUDES)
     set(CMAKE_REQUIRED_LIBRARIES)
+    if(HAVE_CUDA_DMABUF)
+        message(STATUS "CUDA dma-buf export supported (HAVE_CUDA_DMABUF)")
+        message(STATUS "  When building the kernel module, pass:")
+        message(STATUS "    make BUILD_CUDA=1 HAVE_CUDA_DMABUF=1")
+    else()
+        message(STATUS "CUDA dma-buf export NOT supported (need CUDA 11.7+)")
+    endif()
 endif()
 
 # Library sources

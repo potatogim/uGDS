@@ -63,7 +63,16 @@ For **RDMA** buffers (registered with `enable_rdma=1`), additional lifetime rule
 - If using `uGDSRDMARegister()` (tracked API), `uGDSBufDeregister()` will fail with `UGDS_RDMA_MR_STILL_ACTIVE` if MRs are still registered.
 - `uGDSDriverClose()` also fails with `UGDS_RDMA_MR_STILL_ACTIVE` if any RDMA MRs are outstanding.
 
-**Important:** Each backend used at runtime must be enabled in both the kernel module and the userspace library. For example, a CUDA-only kernel module will reject HIP `uGDSBufRegister()` calls. In dual-backend builds, use `uGDSBufRegister(ptr, size, UGDS_REGISTER_DMABUF)` for AMD buffers and `uGDSBufRegister(ptr, size, 0)` for NVIDIA buffers (default).
+**Important:** Each backend used at runtime must be enabled in both the kernel module and the userspace library. For example, a CUDA-only kernel module will reject HIP `uGDSBufRegister()` calls. In dual-backend builds, use `uGDSBufRegisterEx()` with explicit `uGDSBackend_t`.
+
+**CUDA dma-buf / RDMA:** The userspace CMake auto-detects CUDA dma-buf support (`HAVE_CUDA_DMABUF`). When enabled, the kernel module must also be built with the same flag:
+
+```bash
+cd drv
+make BUILD_CUDA=1 HAVE_CUDA_DMABUF=1
+```
+
+Without this flag, the kernel module will not include the `NVM_MAP_DMABUF_MEMORY` ioctl handler, and `uGDSBufRegisterEx()` with `enable_rdma=1` will fail at runtime.
 
 ## Step 1: Build the Kernel Module
 
