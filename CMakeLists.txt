@@ -334,3 +334,17 @@ endif()
 if(NOT UGDS_BACKEND_CUDA AND NOT UGDS_BACKEND_HIP)
     message(WARNING "No GPU backend enabled, tests will not be built")
 endif()
+
+# - RDMA Example --------------------------------
+if(UGDS_ENABLE_RDMA AND UGDS_BACKEND_CUDA)
+    add_executable(rdma_example examples/rdma_example.cu)
+    target_include_directories(rdma_example PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(rdma_example ugds ${UGDS_CUDA_LIBS} ${IBVERBS_LIBRARIES})
+    target_compile_definitions(rdma_example PRIVATE UGDS_ENABLE_RDMA)
+    set_target_properties(rdma_example PROPERTIES
+        CUDA_ARCHITECTURES "${UGDS_CUDA_ARCHITECTURES}"
+        BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+endif()
