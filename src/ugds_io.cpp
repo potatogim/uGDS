@@ -52,6 +52,10 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
         }
     } else {
         void* map_ptr = static_cast<uint8_t*>(bufPtr_base) + bufPtr_offset;
+        // Reject non-64KB-aligned on-the-fly buffers (kernel driver silently rounds down)
+        if ((reinterpret_cast<uintptr_t>(map_ptr) & ((1UL << 16) - 1)) != 0) {
+            return -EINVAL;
+        }
         int rc = nvm_dma_map_device(&buf_dma, hs->ctrl, map_ptr, size);
         if (rc != 0 || buf_dma == nullptr) {
             return -EIO;

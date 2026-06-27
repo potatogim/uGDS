@@ -46,6 +46,20 @@ int main(int argc, char** argv) {
     if (ret != -EINVAL)
         TEST_FAIL("negative offset: expected %d, got %zd", -EINVAL, ret);
 
+    // 6. On-the-fly buffer must be 64KB-aligned (kernel rounds down otherwise)
+    const uintptr_t kGpuPageSize = 1UL << 16;
+    void* d_unreg = nullptr;
+    cudaMalloc(&d_unreg, 131072);
+    if (!d_unreg) TEST_FAIL("cudaMalloc (unregistered) failed");
+    // Pick a buf offset that guarantees base+offset is NOT 64KB-aligned,
+    // regardless of what alignment cudaMalloc happened to return.
+    uintptr_t base = (uintptr_t)d_unreg;
+    off_t mis_off = ((base & (kGpuPageSize - 1)) == 0) ? 4096 : 0;
+    ret = uGDSRead(fh, d_unreg, 4096, 0, mis_off);
+    if (ret != -EINVAL)
+        TEST_FAIL("unaligned on-the-fly buffer: expected %d, got %zd", -EINVAL, ret);
+    cudaFree(d_unreg);
+
     uGDSBufDeregister(d_buf);
     cudaFree(d_buf);
     close_handle(fh);
