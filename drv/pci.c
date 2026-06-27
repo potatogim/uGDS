@@ -380,6 +380,21 @@ static int add_pci_dev(struct pci_dev* dev, const struct pci_device_id* id)
         ctrl_put(ctrl);
         return -EIO;
     }
+#else
+    /* Default CUDA (non-dmabuf): try 64-bit, fall back to 32-bit. */
+    if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(64)))
+    {
+        if (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(32)))
+        {
+            printk(KERN_ERR DRIVER_NAME " failed to set DMA mask\n");
+            pci_clear_master(dev);
+            pci_disable_device(dev);
+            pci_release_region(dev, 0);
+            ctrl_put(ctrl);
+            return -EIO;
+        }
+        printk(KERN_WARNING DRIVER_NAME " using 32-bit DMA mask\n");
+    }
 #endif
 
     ++curr_ctrls;
