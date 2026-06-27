@@ -76,7 +76,13 @@ struct DriverState {
     bool                                          initialized = false;
     std::mutex                                    lock;
     nvm_ctrl_t*                                   default_ctrl = nullptr;
-    std::unordered_map<const void*, nvm_dma_t*>   buf_registry;
+
+    /* Buffer registry with backend tracking for dual-backend dispatch */
+    struct BufEntry {
+        nvm_dma_t*       dma;
+        uGDSBackend_t    backend;
+    };
+    std::unordered_map<const void*, BufEntry>     buf_registry;
 
     /* RDMA MR tracking */
     typedef enum {

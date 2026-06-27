@@ -31,7 +31,7 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
         return make_error(UGDS_GPU_MEMORY_PINNING_FAILED);
     }
 
-    g_driver.buf_registry[bufPtr_base] = dma;
+    g_driver.buf_registry[bufPtr_base] = { dma, UGDS_BACKEND_DEFAULT };
     return UGDS_OK;
 }
 
@@ -69,7 +69,18 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         flags |= NVM_MAP_RDMA;
     }
 
-    return uGDSBufRegister(bufPtr_base, length, flags);
+    uGDSError_t st = uGDSBufRegister(bufPtr_base, length, flags);
+    if (st.err != UGDS_SUCCESS) return st;
+
+    /* Store backend for runtime dispatch */
+    {
+        std::lock_guard<std::mutex> guard(g_driver.lock);
+        auto it = g_driver.buf_registry.find(bufPtr_base);
+        if (it != g_driver.buf_registry.end()) {
+            it->second.backend = config->backend;
+        }
+    }
+    return UGDS_OK;
 }
 
 extern "C" uGDSError_t uGDSBufDeregister(const void* bufPtr_base) {
@@ -90,7 +101,7 @@ extern "C" uGDSError_t uGDSBufDeregister(const void* bufPtr_base) {
         return make_error(UGDS_RDMA_MR_STILL_ACTIVE);
     }
 
-    nvm_dma_unmap(it->second);
+    nvm_dma_unmap(it->second.dma);
     g_driver.buf_registry.erase(it);
     g_driver.rdma_records.erase(bufPtr_base);
 
@@ -118,7 +129,7 @@ extern "C" uGDSError_t uGDSExportDmabuf(const void* bufPtr_base,
     uint64_t offset = 0;
     size_t length = 0;
 
-    if (nvm_dma_get_dmabuf_info(it->second, &internal_fd, &offset, &length) != 0
+    if (nvm_dma_get_dmabuf_info(it->second.dma, &internal_fd, &offset, &length) != 0
         || internal_fd < 0) {
         return make_error(UGDS_IO_NOT_SUPPORTED);
     }

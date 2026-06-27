@@ -50,11 +50,11 @@ static AsyncRequest* make_async_request(uGDSHandle_t fh, void* bufPtr_base,
 }
 
 /* ── Backend-specific host function launch ──
- * Uses ugsd_stream_t (void*) internally. Each backend casts to its
- * native stream type before calling the runtime API. */
+ * Uses ugsd_stream_t (void*) internally. In dual-backend builds,
+ * dispatches based on the buffer's registered backend. */
 
 #if defined(__HIP_PLATFORM_AMD__) && !defined(_CUDA)
-/* HIP-only build: use hipLaunchHostFunc */
+/* HIP-only build */
 #include <hip/hip_runtime_api.h>
 
 static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
@@ -73,21 +73,42 @@ static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
     return UGDS_OK;
 }
 
+#elif defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
+/* Dual-backend build: runtime dispatch based on buffer's backend.
+ * Cannot include both cuda_runtime.h and hip_runtime_api.h in the same
+ * TU due to vector type conflicts. Declare the runtime functions as
+ * extern "C" — both libcudart and libamdhip64 export them. */
+
+/* Declare the runtime launch functions directly without their headers.
+ * Both accept (stream_ptr, callback, user_data) and return int-like. */
+extern "C" {
+int cudaLaunchHostFunc(void* stream, void (*callback)(void*), void* userData);
+int hipLaunchHostFunc(void* stream, void (*callback)(void*), void* userData);
+}
+
+static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
+                                           AsyncRequest* req, uint8_t opcode,
+                                           uGDSBackend_t backend)
+{
+    (void)opcode;
+    int err;
+    if (backend == UGDS_BACKEND_HIP) {
+        err = hipLaunchHostFunc(stream, async_io_callback, req);
+    } else {
+        err = cudaLaunchHostFunc(stream, async_io_callback, req);
+    }
+    if (err != 0) {
+        delete req;
+        uGDSError_t e;
+        e.err = UGDS_CUDA_DRIVER_ERROR;
+        e.cu_err = err;
+        return e;
+    }
+    return UGDS_OK;
+}
+
 #elif defined(_CUDA) || defined(__CUDACC__)
-/* CUDA-only build, or dual-backend build.
- *
- * In dual-backend builds (_CUDA + __HIP_PLATFORM_AMD__), the async
- * dispatch defaults to cudaLaunchHostFunc. This is a deliberate design
- * choice: CUDA streams are the primary async path. HIP users in dual
- * builds should use uGDS sync IO (uGDSRead/uGDSWrite) or synchronize
- * the hipStream before calling async IO, or build HIP-only.
- *
- * The void* stream API (declared in ugds.h) accepts both cudaStream_t
- * and hipStream_t via implicit pointer conversion. */
-#if defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
-#warning "Dual-backend build: async IO uses cudaLaunchHostFunc (CUDA primary). "
-#warning "HIP async IO requires HIP-only build for hipLaunchHostFunc dispatch."
-#endif
+/* CUDA-only build */
 #include <cuda_runtime.h>
 
 static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
@@ -97,27 +118,6 @@ static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
     cudaError_t err = cudaLaunchHostFunc((cudaStream_t)(uintptr_t)stream,
                                          async_io_callback, req);
     if (err != cudaSuccess) {
-        delete req;
-        uGDSError_t e;
-        e.err = UGDS_CUDA_DRIVER_ERROR;
-        e.cu_err = static_cast<int>(err);
-        return e;
-    }
-    return UGDS_OK;
-}
-
-#elif defined(__HIP_PLATFORM_AMD__)
-/* Dual-backend fallback: HIP path (only reached if _CUDA is also defined
- * but the stream is actually a hipStream_t). */
-#include <hip/hip_runtime_api.h>
-
-static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
-                                           AsyncRequest* req, uint8_t opcode)
-{
-    (void)opcode;
-    hipError_t err = hipLaunchHostFunc((hipStream_t)stream,
-                                       async_io_callback, req);
-    if (err != hipSuccess) {
         delete req;
         uGDSError_t e;
         e.err = UGDS_CUDA_DRIVER_ERROR;
@@ -151,7 +151,19 @@ extern "C" uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void* bufPtr_base,
 
     AsyncRequest* req = make_async_request(fh, bufPtr_base, size_p, file_offset_p,
                                             bufPtr_offset_p, bytes_read_p, NVM_IO_READ);
+#if defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
+    /* Dual-backend: look up buffer's registered backend */
+    uGDSBackend_t backend = UGDS_BACKEND_DEFAULT;
+    {
+        std::lock_guard<std::mutex> guard(g_driver.lock);
+        auto it = g_driver.buf_registry.find(bufPtr_base);
+        if (it != g_driver.buf_registry.end())
+            backend = it->second.backend;
+    }
+    return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_READ, backend);
+#else
     return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_READ);
+#endif
 }
 
 extern "C" uGDSError_t uGDSWriteAsync(uGDSHandle_t fh, void* bufPtr_base,
@@ -165,7 +177,19 @@ extern "C" uGDSError_t uGDSWriteAsync(uGDSHandle_t fh, void* bufPtr_base,
 
     AsyncRequest* req = make_async_request(fh, bufPtr_base, size_p, file_offset_p,
                                             bufPtr_offset_p, bytes_written_p, NVM_IO_WRITE);
+#if defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
+    /* Dual-backend: look up buffer's registered backend */
+    uGDSBackend_t backend = UGDS_BACKEND_DEFAULT;
+    {
+        std::lock_guard<std::mutex> guard(g_driver.lock);
+        auto it = g_driver.buf_registry.find(bufPtr_base);
+        if (it != g_driver.buf_registry.end())
+            backend = it->second.backend;
+    }
+    return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_WRITE, backend);
+#else
     return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_WRITE);
+#endif
 }
 
 extern "C" uGDSError_t uGDSStreamRegister(void* stream)
