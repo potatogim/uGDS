@@ -186,6 +186,18 @@ set(FUNCTIONAL_TESTS
     test_alignment_errors
     test_multi_offset
     test_concurrent_qps
+    test_batch_basic
+    test_batch_mixed_sizes
+    test_batch_mixed_ops
+    test_batch_errors
+    test_batch_reuse
+    test_batch_deep
+    test_async_basic
+    test_async_stream_order
+    test_async_late_binding
+    test_async_errors
+    test_async_multi_stream
+    test_rdma_export
 )
 
 # CUDA tests (compiled with nvcc)
