@@ -243,7 +243,14 @@ void uGDSBatchIODestroy(uGDSBatchHandle_t batch);
  *
  * Stream parameter is void* to support both CUDA and HIP backends.
  * Pass cudaStream_t (CUDA) or hipStream_t (HIP) — both implicitly
- * convert to void*. */
+ * convert to void*.
+ *
+ * Backend dispatch:
+ *   - CUDA-only build: uses cudaLaunchHostFunc
+ *   - HIP-only build: uses hipLaunchHostFunc
+ *   - Dual-backend build: uses cudaLaunchHostFunc (CUDA primary).
+ *     For HIP async IO in a dual build, synchronize the hipStream before
+ *     calling uGDS async IO, or build HIP-only for native HIP dispatch. */
 
 uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void *bufPtr_base,
                            size_t *size_p, off_t *file_offset_p,

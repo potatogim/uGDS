@@ -52,13 +52,18 @@ ifneq ($(KERNELRELEASE),)
  endif
  endif
 
-	# dmabuf backend available when HIP or CUDA is enabled
+	# dmabuf backend available when HIP is enabled, or when CUDA
+	# with explicit HAVE_CUDA_DMABUF is enabled (to match the userspace
+	# CMake HAVE_CUDA_DMABUF detection). CUDA builds without dmabuf
+	# export support should not enable the kernel dmabuf code path.
 UGDS_HAVE_DMABUF := 0
 ifeq ($(BUILD_HIP),1)
   UGDS_HAVE_DMABUF := 1
 endif
-ifeq ($(ENABLE_CUDA),1)
-  UGDS_HAVE_DMABUF := 1
+ifdef HAVE_CUDA_DMABUF
+  ifneq ($(HAVE_CUDA_DMABUF),0)
+    UGDS_HAVE_DMABUF := 1
+  endif
 endif
 
 ifeq ($(UGDS_HAVE_DMABUF),1)
