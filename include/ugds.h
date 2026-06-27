@@ -8,8 +8,10 @@
 #include <time.h>
 
 /* Conditional GPU runtime include — supports both CUDA and HIP.
- * _CUDA/_HIP are CMake-defined backend selectors (not compiler builtins). */
-#if defined(_CUDA)
+ * _CUDA: CMake-defined (library build with g++)
+ * __CUDACC__: defined by nvcc (test/application build)
+ * __HIP_PLATFORM_AMD__: defined by hipcc */
+#if defined(_CUDA) || defined(__CUDACC__)
 #include <cuda_runtime.h>
 #elif defined(__HIP_PLATFORM_AMD__)
 #include <hip/hip_runtime_api.h>
@@ -21,7 +23,7 @@ extern "C" {
 #endif
 
 /* Opaque stream type when no GPU SDK is present */
-#if !defined(_CUDA) && !defined(__HIP_PLATFORM_AMD__)
+#if !defined(_CUDA) && !defined(__CUDACC__) && !defined(__HIP_PLATFORM_AMD__)
 typedef void* cudaStream_t;
 #endif
 
