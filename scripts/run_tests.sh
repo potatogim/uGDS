@@ -206,7 +206,16 @@ run_perf_ugds() {
     local ugds_dev
     ugds_dev=$(ensure_ugds "$slot")
 
-    if [ ! -x "$BUILD_DIR/bench_ugds" ]; then
+    # Find bench_ugds (may be suffixed in dual-backend builds)
+    local bench_bin=""
+    for suffix in "" "_cuda" "_hip"; do
+        if [ -x "$BUILD_DIR/bench_ugds${suffix}" ]; then
+            bench_bin="$BUILD_DIR/bench_ugds${suffix}"
+            break
+        fi
+    done
+
+    if [ -z "$bench_bin" ]; then
         echo "  SKIP (bench_ugds not built)"
         echo ""
         return
@@ -217,7 +226,7 @@ run_perf_ugds() {
 
     for sz in 4K 128K 1M; do
         echo "[UGDS - ${sz} seq read]"
-        "$BUILD_DIR/bench_ugds" -f "$ugds_dev" -l 128M -s "$sz" -t 1 -d "$GPU_ID" -m read
+        "$bench_bin" -f "$ugds_dev" -l 128M -s "$sz" -t 1 -d "$GPU_ID" -m read
     done
     echo ""
 }
