@@ -128,6 +128,7 @@ scripts/run_tests.sh all
 | 7 | Multi-SSD support (multi-handle aggregation) | 🔜 |
 | 8 | Striping (automatic IO distribution across SSDs) | 🔜 |
 | 9 | Filesystem compatibility (POSIX file path support) | 🔜 |
+| 10 | LMCache integration (KV cache storage backend) | 🔧 |
 
 ## Citation
 
