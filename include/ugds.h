@@ -4,8 +4,12 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include <libnvm/nvm_dma.h>  /* NVM_MAP_DMABUF */
 #include <time.h>
+
+/* Buffer registration flags (defined locally to avoid pulling in
+ * libnvm/nvm_dma.h, which transitively includes C++ <atomic>) */
+#define NVM_MAP_DMABUF  0x1
+#define NVM_MAP_RDMA    0x2
 
 /* GPU runtime headers are NOT included in the public header.
  * cuda_runtime.h and hip_runtime_api.h define conflicting types
