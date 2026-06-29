@@ -169,31 +169,11 @@ run_functional() {
         test_async_late_binding
         test_async_errors
         test_async_multi_stream
-    )
-
-    # RDMA tests (only if built)
-    local rdma_tests=(
-        test_rdma_export
-        test_rdma_tracked
+        test_dmabuf_export
     )
 
     for t in "${tests[@]}"; do
         # In dual-backend builds, targets may be suffixed (_cuda/_hip)
-        local found=0
-        for suffix in "" "_cuda" "_hip"; do
-            if [ -x "$BUILD_DIR/${t}${suffix}" ]; then
-                run_test "$t${suffix}" "$BUILD_DIR/${t}${suffix}" "$ugds_dev" "$GPU_ID"
-                found=1
-            fi
-        done
-        if [ $found -eq 0 ]; then
-            printf "  %-40s ${Y}SKIP${N} (not built)\n" "$t"
-            SKIPPED=$((SKIPPED + 1))
-        fi
-    done
-    for t in "${rdma_tests[@]}"; do
-        # RDMA tests may not be built in non-RDMA configs.
-        # In dual-backend builds, both _cuda and _hip variants may exist.
         local found=0
         for suffix in "" "_cuda" "_hip"; do
             if [ -x "$BUILD_DIR/${t}${suffix}" ]; then

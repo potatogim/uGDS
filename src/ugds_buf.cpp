@@ -58,19 +58,18 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
         flags |= NVM_MAP_DMABUF;
+        flags |= NVM_MAP_RDMA;  /* retain dmabuf fd for export */
 #endif
         break;
     case UGDS_BACKEND_CUDA:
 #ifndef _CUDA
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
+#else
+        flags |= NVM_MAP_RDMA;  /* enable dmabuf export path */
 #endif
         break;
     default:
         return make_error(UGDS_INVALID_VALUE);
-    }
-
-    if (config->enable_rdma) {
-        flags |= NVM_MAP_RDMA;
     }
 
     uGDSError_t st = uGDSBufRegister(bufPtr_base, length, flags);
@@ -99,15 +98,8 @@ extern "C" uGDSError_t uGDSBufDeregister(const void* bufPtr_base) {
         return make_error(UGDS_MEMORY_NOT_REGISTERED);
     }
 
-    /* Check outstanding RDMA MRs before unmapping */
-    auto mr_it = g_driver.rdma_records.find(bufPtr_base);
-    if (mr_it != g_driver.rdma_records.end() && !mr_it->second.empty()) {
-        return make_error(UGDS_RDMA_MR_STILL_ACTIVE);
-    }
-
     nvm_dma_unmap(it->second.dma);
     g_driver.buf_registry.erase(it);
-    g_driver.rdma_records.erase(bufPtr_base);
 
     return UGDS_OK;
 }
