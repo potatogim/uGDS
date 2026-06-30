@@ -126,20 +126,23 @@ scripts/run_tests.sh all
 | `uGDSHandleRegister / Deregister` | ✅ | Block device fd (no filesystem) |
 | `uGDSBufRegister / Deregister` | ✅ | GPU memory only |
 | `uGDSRead / Write` | ✅ | Synchronous, block-aligned |
-| `uGDSBatchIOSetUp / Submit / GetStatus` | 🔜 | Batch doorbell optimization |
-| `uGDSReadAsync / WriteAsync` | 🔜 | CUDA stream integration |
+| `uGDSBatchIOSetUp / Submit / GetStatus` | ✅ | Batch doorbell optimization |
+| `uGDSReadAsync / WriteAsync` | ✅ | CUDA/HIP stream integration |
+| `uGDSBufRegisterEx` | ✅ | Dual-backend with explicit backend selection |
+| `uGDSExportDmabuf` | ✅ | DMA-buf fd export for RDMA |
 
 ## Roadmap
 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Core synchronous API + test suite | ✅ |
-| 2 | Batch IO API (multi-command doorbell) | 🔜 |
-| 3 | Async Stream API (CUDA stream integration) | 🔜 |
-| 4 | Hugepage support (larger QP depth) | 🔜 |
-| 5 | SGL support (scatter-gather lists) | 🔜 |
-| 6 | Interrupt mode (MSI-X + eventfd) | 🔜 |
-| 7 | Filesystem compatibility (POSIX file path support) | 🔜 |
+| 2 | Batch IO API (multi-command doorbell) | ✅ |
+| 3 | Async Stream API (CUDA/HIP stream integration) | ✅ |
+| 4 | Hugepage support (larger QP depth) | ✅ |
+| 5 | Dual CUDA/HIP backend + DMA-buf export | ✅ |
+| 6 | SGL support (scatter-gather lists) | 🔜 |
+| 7 | Interrupt mode (MSI-X + eventfd) | 🔜 |
+| 8 | Filesystem compatibility (POSIX file path support) | 🔜 |
 
 ## References
 
