@@ -525,10 +525,19 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
             }
         }
     } else {
+        /* Commands still in flight after drain timeout.
+         * The NVMe device may still DMA through the PRP list and CQ,
+         * so we must NOT: free the PRP pool, release handle ref, or
+         * delete the batch state.  Leaking these resources is strictly
+         * safer than freeing mappings while the device may still
+         * access them.  Buffer deregister will block (UGDS_BUSY) and
+         * HandleDeregister will spin (handle_in_flight > 0) until the
+         * caller resets the controller. */
         fprintf(stderr, "uGDS: BatchIODestroy: %u commands still in "
-                "flight after drain timeout — skipping ref release to "
-                "prevent DMA-after-unmap. Buffer deregister will block "
-                "(UGDS_BUSY) until controller reset.\n", bs->in_flight);
+                "flight after drain timeout — leaking batch resources "
+                "to prevent DMA-after-unmap. Controller reset required.\n",
+                bs->in_flight);
+        return;
     }
 
     cleanup_prp_pool(bs);
