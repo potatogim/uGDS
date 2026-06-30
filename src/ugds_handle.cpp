@@ -297,6 +297,23 @@ extern "C" void uGDSHandleDeregister(uGDSHandle_t fh)
 
     HandleState* hs = reinterpret_cast<HandleState*>(fh);
 
+    /* Wait for outstanding async operations to complete before tearing
+     * down QPs and controller. Async callbacks hold handle_in_flight
+     * refs; spin until they drain. This prevents use-after-free of
+     * HandleState fields accessed inside do_io_internal. */
+    {
+        uint32_t spins = 0;
+        const uint32_t max_spin = 1000000;  /* bounded busy-wait */
+        while (hs->handle_in_flight.load(std::memory_order_acquire) > 0) {
+            if (++spins > max_spin) {
+                /* Best-effort: proceed with teardown after timeout.
+                 * Async callbacks will find freed QPs and return -EIO. */
+                break;
+            }
+            __builtin_ia32_pause();
+        }
+    }
+
     if (hs->batch_qp)
         cleanup_batch_qp(hs->aq_ref, hs->batch_qp.get());
     hs->batch_qp.reset();

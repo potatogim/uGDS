@@ -70,6 +70,7 @@ struct HandleState {
     std::unique_ptr<IOQueuePairHuge> batch_qp;
     uint16_t                    batch_queue_depth;
     std::atomic<bool>           batch_active{false};
+    std::atomic<uint32_t>       handle_in_flight{0};  /* async refcount for safe deregister */
 };
 
 struct DriverState {

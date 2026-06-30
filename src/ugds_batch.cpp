@@ -209,6 +209,9 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
 
         size_t n_cmds = (p.size + max_xfer - 1) / max_xfer;
         if (n_cmds == 0) n_cmds = 1;
+        if (n_cmds > UINT16_MAX) {
+            return make_error(UGDS_INVALID_VALUE);
+        }
         entry.n_cmds = static_cast<uint16_t>(n_cmds);
     }
 
