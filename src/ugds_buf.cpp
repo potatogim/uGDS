@@ -60,6 +60,11 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
     int flags = 0;
     switch (config->backend) {
     case UGDS_BACKEND_DEFAULT:
+        /* Export requires an explicit backend so the correct dma-buf
+         * path is selected. DEFAULT relies on auto-probe which does
+         * not retain an exportable fd. */
+        if (config->enable_export)
+            return make_error(UGDS_INVALID_VALUE);
         break;
     case UGDS_BACKEND_HIP:
 #ifndef _HIP
