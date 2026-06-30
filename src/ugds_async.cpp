@@ -60,10 +60,11 @@ static AsyncRequest* make_async_request(uGDSHandle_t fh, void* bufPtr_base,
                                          off_t* bufPtr_offset_p, ssize_t* bytes_done_p,
                                          uint8_t opcode)
 {
-    return new AsyncRequest{
+    AsyncRequest* req = new (std::nothrow) AsyncRequest{
         fh, bufPtr_base, size_p, file_offset_p, bufPtr_offset_p,
         bytes_done_p, opcode
     };
+    return req;
 }
 
 /* ── Backend-specific host function launch ──
@@ -180,6 +181,10 @@ extern "C" uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void* bufPtr_base,
 
     AsyncRequest* req = make_async_request(fh, bufPtr_base, size_p, file_offset_p,
                                             bufPtr_offset_p, bytes_read_p, NVM_IO_READ);
+    if (req == nullptr) {
+        async_release_inflight(bufPtr_base);
+        return make_error(UGDS_INTERNAL_ERROR);
+    }
 #if defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
     /* Dual-backend: look up buffer's registered backend */
     uGDSBackend_t backend = UGDS_BACKEND_DEFAULT;
@@ -214,6 +219,10 @@ extern "C" uGDSError_t uGDSWriteAsync(uGDSHandle_t fh, void* bufPtr_base,
 
     AsyncRequest* req = make_async_request(fh, bufPtr_base, size_p, file_offset_p,
                                             bufPtr_offset_p, bytes_written_p, NVM_IO_WRITE);
+    if (req == nullptr) {
+        async_release_inflight(bufPtr_base);
+        return make_error(UGDS_INTERNAL_ERROR);
+    }
 #if defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
     /* Dual-backend: look up buffer's registered backend */
     uGDSBackend_t backend = UGDS_BACKEND_DEFAULT;
