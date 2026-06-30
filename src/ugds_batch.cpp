@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <time.h>
+#include <cstdio>
 
 /* Release in-flight reference held by batch submit.
  * Called on validation failure or when batch entry completes. */
@@ -506,16 +507,28 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
     }
 
     /* Best-effort: release in-flight references for entries that were
-     * submitted but never fully completed (e.g., hardware timeout,
-     * submit phase-3 early return, or partial sub-command failure).
-     * Check n_cmds_done < n_cmds rather than status alone, because
-     * drain_one_completion sets FAILED before all sub-commands drain. */
-    for (unsigned i = 0; i < bs->n_entries; ++i) {
-        BatchIOEntry& entry = bs->entries[i];
-        if (entry.n_cmds > 0 && entry.n_cmds_done < entry.n_cmds) {
-            async_release_inflight_batch(entry.devPtr_base);
-            entry.status = UGDS_BATCH_FAILED;
+     * submitted but never fully completed (e.g., submit phase-3 early
+     * return). Check n_cmds_done < n_cmds rather than status alone.
+     *
+     * IMPORTANT: do NOT release refs for entries that have commands
+     * still outstanding in the NVMe SQ (bs->in_flight > 0 after drain).
+     * Those commands may still DMA. Leaking the refs (blocking
+     * deregister) is strictly safer than freeing mappings while the
+     * device may still access them. The caller should reset the
+     * controller if truly stuck. */
+    if (bs->in_flight == 0) {
+        for (unsigned i = 0; i < bs->n_entries; ++i) {
+            BatchIOEntry& entry = bs->entries[i];
+            if (entry.n_cmds > 0 && entry.n_cmds_done < entry.n_cmds) {
+                async_release_inflight_batch(entry.devPtr_base);
+                entry.status = UGDS_BATCH_FAILED;
+            }
         }
+    } else {
+        fprintf(stderr, "uGDS: BatchIODestroy: %u commands still in "
+                "flight after drain timeout — skipping ref release to "
+                "prevent DMA-after-unmap. Buffer deregister will block "
+                "(UGDS_BUSY) until controller reset.\n", bs->in_flight);
     }
 
     cleanup_prp_pool(bs);

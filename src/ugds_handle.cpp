@@ -297,23 +297,23 @@ extern "C" void uGDSHandleDeregister(uGDSHandle_t fh)
 
     HandleState* hs = reinterpret_cast<HandleState*>(fh);
 
-    /* Wait for outstanding async operations to complete before tearing
-     * down QPs and controller. Async callbacks hold handle_in_flight
-     * refs; spin until they drain. This prevents use-after-free of
-     * HandleState fields accessed inside do_io_internal.
+    /* Wait for ALL outstanding operations to complete before tearing
+     * down QPs and controller. This is an unbounded wait — callers MUST
+     * ensure streams are synchronized and batches are destroyed before
+     * deregistering a handle. A timeout here would convert a stuck
+     * operation into use-after-free, which is strictly worse.
      *
-     * Note: batch lifetime refs are also tracked here — BatchIOSetUp
-     * acquires a ref and BatchIODestroy releases it. */
+     * Covered refs:
+     *   - async callbacks (handle_in_flight incremented in async_validate)
+     *   - batch lifetime (handle_in_flight incremented in BatchIOSetUp) */
     {
-        const uint64_t max_spin = 100000000ULL;  /* ~tens of seconds */
-        uint64_t spins = 0;
+        uint64_t warn_counter = 0;
         while (hs->handle_in_flight.load(std::memory_order_acquire) > 0) {
-            if (++spins > max_spin) {
-                fprintf(stderr, "uGDS: HandleDeregister timed out waiting "
-                        "for %u in-flight operations — proceeding with "
-                        "teardown (UB risk)\n",
+            if ((++warn_counter % 100000000ULL) == 0) {
+                fprintf(stderr, "uGDS: HandleDeregister waiting for %u "
+                        "in-flight operations — ensure streams are "
+                        "synchronized and batches are destroyed\n",
                         hs->handle_in_flight.load());
-                break;
             }
             __builtin_ia32_pause();
         }
