@@ -64,6 +64,7 @@ typedef enum uGDSOpError {
     UGDS_GPU_MEMORY_PINNING_FAILED   = UGDS_BASE_ERR + 36,
 
     UGDS_BATCH_CAPACITY_EXCEEDED     = UGDS_BASE_ERR + 40,
+    UGDS_RDMA_MR_STILL_ACTIVE        = UGDS_BASE_ERR + 41,
     UGDS_BUSY                        = UGDS_BASE_ERR + 42,
 } uGDSOpError;
 
@@ -83,6 +84,7 @@ static inline const char* uGDS_status_error(uGDSOpError status) {
     case UGDS_INTERNAL_ERROR:              return "internal error";
     case UGDS_GPU_MEMORY_PINNING_FAILED:   return "GPU memory pinning failed";
     case UGDS_BATCH_CAPACITY_EXCEEDED:     return "batch capacity exceeded";
+    case UGDS_RDMA_MR_STILL_ACTIVE:       return "RDMA MR still active";
 
     case UGDS_BUSY:                        return "resource busy, retry";
     default:                                  return "unknown uGDS error";
@@ -140,6 +142,7 @@ typedef enum uGDSBackend {
 typedef struct uGDSBufConfig {
     uGDSBackend_t   backend;
     bool            enable_export;  /* request dma-buf fd for RDMA/peer export */
+    int             enable_rdma;    /* retain dmabuf fd for tracked RDMA MR */
 } uGDSBufConfig_t;
 
 uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
@@ -158,6 +161,32 @@ typedef struct uGDSDmabufExport {
  * Caller owns out->fd and MUST close it after use. */
 uGDSError_t uGDSExportDmabuf(const void* bufPtr_base,
                               uGDSDmabufExport_t* out);
+
+/* Tracked RDMA MR API — uGDS manages ibv_dereg_mr internally.
+ *
+ * When UGDS_ENABLE_RDMA=ON at build time, these call ibv_reg_dmabuf_mr /
+ * ibv_dereg_mr. When RDMA is not enabled, they return UGDS_IO_NOT_SUPPORTED.
+ *
+ * PRECONDITION for uGDSRDMAUnregister: all Work Requests referencing
+ * this MR must have completed (QP drained). uGDS cannot verify this. */
+
+/* Forward declaration — ibv_pd is opaque */
+struct ibv_pd;
+
+typedef struct uGDSRDMARegion {
+    void*           mr;          /* ibv_mr* (opaque) */
+    uint32_t        lkey;
+    uint32_t        rkey;
+    uint64_t        iova;        /* IOVA/base address for SGE posting */
+} uGDSRDMARegion_t;
+
+uGDSError_t uGDSRDMARegister(const void* bufPtr_base,
+                              struct ibv_pd* pd,
+                              int access_flags,
+                              uGDSRDMARegion_t* region);
+
+uGDSError_t uGDSRDMAUnregister(const void* bufPtr_base,
+                                uGDSRDMARegion_t* region);
 
 ssize_t uGDSRead(uGDSHandle_t fh, void* bufPtr_base, size_t size,
                    off_t file_offset, off_t bufPtr_offset);
