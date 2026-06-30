@@ -221,6 +221,7 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
 extern "C" ssize_t uGDSRead(uGDSHandle_t fh, void* bufPtr_base, size_t size,
                               off_t file_offset, off_t bufPtr_offset)
 {
+    if (fh == nullptr) return -EINVAL;
     HandleState* hs = static_cast<HandleState*>(fh);
     hs->handle_in_flight.fetch_add(1, std::memory_order_acq_rel);
     ssize_t ret = do_io_internal(fh, bufPtr_base, size, file_offset, bufPtr_offset, NVM_IO_READ);
@@ -231,6 +232,7 @@ extern "C" ssize_t uGDSRead(uGDSHandle_t fh, void* bufPtr_base, size_t size,
 extern "C" ssize_t uGDSWrite(uGDSHandle_t fh, const void* bufPtr_base, size_t size,
                                off_t file_offset, off_t bufPtr_offset)
 {
+    if (fh == nullptr) return -EINVAL;
     HandleState* hs = static_cast<HandleState*>(fh);
     hs->handle_in_flight.fetch_add(1, std::memory_order_acq_rel);
     ssize_t ret = do_io_internal(fh, const_cast<void*>(bufPtr_base), size, file_offset, bufPtr_offset,

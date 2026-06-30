@@ -533,9 +533,13 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
 
     cleanup_prp_pool(bs);
 
+    /* Mark batch inactive before releasing handle ref.
+     * HandleDeregister waits on handle_in_flight==0, so we must not
+     * touch hs after fetch_sub. */
+    hs->batch_active.store(false);
+
     /* Release handle reference acquired in BatchIOSetUp */
     hs->handle_in_flight.fetch_sub(1, std::memory_order_acq_rel);
 
-    hs->batch_active.store(false);
     delete bs;
 }
