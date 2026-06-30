@@ -27,7 +27,7 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
                                        const_cast<void*>(bufPtr_base), length,
                                        flags);
     if (status != 0 || dma == nullptr) {
-        if (status == ENOTSUP)
+        if (status == ENOTSUP || status == EOPNOTSUPP)
             return make_error(UGDS_IO_NOT_SUPPORTED);
         return make_error(UGDS_GPU_MEMORY_PINNING_FAILED);
     }
@@ -155,16 +155,10 @@ extern "C" uGDSError_t uGDSExportDmabuf(const void* bufPtr_base,
         return make_error(UGDS_IO_NOT_SUPPORTED);
     }
 
-    /* C-02 fix: dup() so caller owns the fd */
-    int dup_fd = dup(internal_fd);
+    /* Atomically dup with CLOEXEC to prevent fd leaking into child
+     * processes across fork/exec in multithreaded callers. */
+    int dup_fd = fcntl(internal_fd, F_DUPFD_CLOEXEC, 0);
     if (dup_fd < 0) {
-        return make_error(UGDS_INTERNAL_ERROR);
-    }
-
-    /* Set FD_CLOEXEC on the dup'd fd — fail hard on error (security) */
-    int fd_flags = fcntl(dup_fd, F_GETFD);
-    if (fd_flags < 0 || fcntl(dup_fd, F_SETFD, fd_flags | FD_CLOEXEC) < 0) {
-        close(dup_fd);
         return make_error(UGDS_INTERNAL_ERROR);
     }
 

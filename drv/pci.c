@@ -255,9 +255,9 @@ static long map_ioctl(struct file* file, unsigned int cmd, unsigned long arg)
 #else
         case NVM_MAP_DMABUF_MEMORY:
             /* Kernel module built without dmabuf support — return
-             * ENOTSUP so userspace can distinguish "not compiled in"
+             * EOPNOTSUPP so userspace can distinguish "not compiled in"
              * from a real EINVAL on a bad request. */
-            retval = -ENOTSUP;
+            retval = -EOPNOTSUPP;
             break;
 #endif
 
