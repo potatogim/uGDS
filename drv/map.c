@@ -50,7 +50,7 @@ static struct map* create_descriptor(const struct ctrl* ctrl, u64 vaddr, unsigne
 
     list_node_init(&map->list);
 
-    map->owner_tgid = task_tgid_nr(current);
+    map->owner_pid = get_task_pid(current, PIDTYPE_TGID);
     map->vaddr = vaddr;
     map->pdev = ctrl->pdev;
     map->page_size = 0;
@@ -79,6 +79,9 @@ void unmap_and_release(struct map* map)
         map->release(map);
     }
 
+    if (map->owner_pid != NULL)
+        put_pid(map->owner_pid);
+
     kvfree(map);
 }
 
@@ -93,7 +96,10 @@ struct map* map_find(const struct list* list, u64 vaddr)
     {
         map = container_of(element, struct map, list);
 
-        if (map->owner_tgid == task_tgid_nr(current))
+        /* Compare refcounted pid pointers, not numeric PID values,
+         * to prevent collisions after PID/TGID reuse on long-running
+         * systems. get_task_pid returns a borrowed ref (no put needed). */
+        if (map->owner_pid == get_task_pid(current, PIDTYPE_TGID))
         {
             /* Match address using the mapping's own page size.
              * Previously the unconditional GPU_PAGE_MASK (64 KiB)

@@ -12,6 +12,7 @@
 #include <linux/types.h>
 #include <linux/mm_types.h>
 #include <linux/atomic.h>
+#include <linux/pid.h>
 
 
 /* Forward declaration */
@@ -28,7 +29,7 @@ typedef void (*release)(struct map*);
 struct map
 {
     struct list_node    list;           /* Linked list header */
-    pid_t               owner_tgid;     /* Owner thread group id (process) */
+    struct pid*         owner_pid;      /* Refcounted owner process (prevents PID reuse collision) */
     u64                 vaddr;          /* Starting virtual address */
     struct list*        ctrl_list;
     struct pci_dev*     pdev;           /* Reference to physical PCI device */
