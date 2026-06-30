@@ -300,14 +300,19 @@ extern "C" void uGDSHandleDeregister(uGDSHandle_t fh)
     /* Wait for outstanding async operations to complete before tearing
      * down QPs and controller. Async callbacks hold handle_in_flight
      * refs; spin until they drain. This prevents use-after-free of
-     * HandleState fields accessed inside do_io_internal. */
+     * HandleState fields accessed inside do_io_internal.
+     *
+     * Note: batch lifetime refs are also tracked here — BatchIOSetUp
+     * acquires a ref and BatchIODestroy releases it. */
     {
-        uint32_t spins = 0;
-        const uint32_t max_spin = 1000000;  /* bounded busy-wait */
+        const uint64_t max_spin = 100000000ULL;  /* ~tens of seconds */
+        uint64_t spins = 0;
         while (hs->handle_in_flight.load(std::memory_order_acquire) > 0) {
             if (++spins > max_spin) {
-                /* Best-effort: proceed with teardown after timeout.
-                 * Async callbacks will find freed QPs and return -EIO. */
+                fprintf(stderr, "uGDS: HandleDeregister timed out waiting "
+                        "for %u in-flight operations — proceeding with "
+                        "teardown (UB risk)\n",
+                        hs->handle_in_flight.load());
                 break;
             }
             __builtin_ia32_pause();

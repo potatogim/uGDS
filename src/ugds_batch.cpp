@@ -148,6 +148,11 @@ extern "C" uGDSError_t uGDSBatchIOSetUp(uGDSBatchHandle_t* batch,
         ? ~0ULL : (1ULL << UGDS_PRP_POOL_PAGES) - 1;
 
     *batch = static_cast<uGDSBatchHandle_t>(bs);
+
+    /* Hold handle reference for batch lifetime. Prevents HandleDeregister
+     * from freeing QPs/controller while batch state is active. */
+    hs->handle_in_flight.fetch_add(1, std::memory_order_acq_rel);
+
     return UGDS_OK;
 }
 
@@ -514,6 +519,10 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
     }
 
     cleanup_prp_pool(bs);
+
+    /* Release handle reference acquired in BatchIOSetUp */
+    hs->handle_in_flight.fetch_sub(1, std::memory_order_acq_rel);
+
     hs->batch_active.store(false);
     delete bs;
 }
