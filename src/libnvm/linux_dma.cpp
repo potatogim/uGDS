@@ -495,6 +495,12 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
 
             if (cu_err != CUDA_SUCCESS || dmabuf_fd < 0) {
                 dprintf("cuMemGetHandleForAddressRange failed: %d\n", cu_err);
+                /* CUDA_ERROR_NOT_SUPPORTED means the GPU/driver supports
+                 * the query but not the PCIe dmabuf export path. Translate
+                 * to ENOTSUP so callers get UGDS_IO_NOT_SUPPORTED and can
+                 * skip or fall back gracefully. */
+                if (cu_err == CUDA_ERROR_NOT_SUPPORTED)
+                    return ENOTSUP;
                 return EIO;
             }
             dmabuf_offset = 0;
