@@ -220,6 +220,22 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
         return EINVAL;
     }
 
+    /* Reject conflicting backend flags */
+    if ((flags & NVM_MAP_DMABUF) && (flags & NVM_MAP_FORCE_CUDA))
+    {
+        dprintf("nvm_dma_map_device: NVM_MAP_DMABUF and NVM_MAP_FORCE_CUDA are mutually exclusive\n");
+        return EINVAL;
+    }
+
+    /* Reject FORCE_CUDA when CUDA is not compiled in */
+#ifndef _CUDA
+    if (flags & NVM_MAP_FORCE_CUDA)
+    {
+        dprintf("nvm_dma_map_device: NVM_MAP_FORCE_CUDA requested but CUDA backend not compiled in\n");
+        return ENOTSUP;
+    }
+#endif
+
     /* Determine which backend to use at runtime */
     int use_hip = 0;
 #ifdef _HIP
