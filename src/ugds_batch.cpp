@@ -7,6 +7,16 @@
 #include <atomic>
 #include <time.h>
 
+/* Release in-flight reference held by batch submit.
+ * Called on validation failure or when batch entry completes. */
+static void async_release_inflight_batch(void* devPtr_base)
+{
+    std::lock_guard<std::mutex> drv_lock(g_driver.lock);
+    auto it = g_driver.buf_registry.find(devPtr_base);
+    if (it != g_driver.buf_registry.end())
+        it->second.in_flight.fetch_sub(1, std::memory_order_acq_rel);
+}
+
 static void cleanup_prp_pool(BatchState* bs)
 {
     PRPPool& pool = bs->prp_pool;
@@ -64,6 +74,8 @@ static bool drain_one_completion(IOQueuePair& qp, BatchState* bs)
         }
         entry.error_code = entry.bytes_done;
         bs->n_completed++;
+        /* Release in-flight reference when all sub-commands complete */
+        async_release_inflight_batch(entry.devPtr_base);
     }
 
     return true;
@@ -224,8 +236,13 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
         {
             std::lock_guard<std::mutex> drv_lock(g_driver.lock);
             auto it = g_driver.buf_registry.find(entry.devPtr_base);
-            if (it != g_driver.buf_registry.end())
+            if (it != g_driver.buf_registry.end()) {
                 buf_dma = it->second.dma;
+                /* Hold in-flight reference until batch completions are drained
+                 * or destroy finishes. Prevents Deregister from unmapping
+                 * while batch commands retain PRPs from this buffer. */
+                it->second.in_flight.fetch_add(1, std::memory_order_acq_rel);
+            }
         }
 
         if (buf_dma == nullptr) {
@@ -243,6 +260,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
             entry.n_cmds = 0;
             entry.n_cmds_done = 0;
             bs->n_completed++;
+            async_release_inflight_batch(entry.devPtr_base);
             continue;
         }
         buf_page_start = static_cast<size_t>(entry.devPtr_offset) / page_size;
@@ -255,6 +273,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
             entry.n_cmds = 0;
             entry.n_cmds_done = 0;
             bs->n_completed++;
+            async_release_inflight_batch(entry.devPtr_base);
             continue;
         }
 
@@ -475,6 +494,16 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
             } else {
                 spins = 0;
             }
+        }
+    }
+
+    /* Best-effort: release in-flight references for entries that were
+     * submitted but never completed (e.g., hardware timeout). */
+    for (unsigned i = 0; i < bs->n_entries; ++i) {
+        BatchIOEntry& entry = bs->entries[i];
+        if (entry.status == UGDS_BATCH_PENDING) {
+            async_release_inflight_batch(entry.devPtr_base);
+            entry.status = UGDS_BATCH_FAILED;
         }
     }
 

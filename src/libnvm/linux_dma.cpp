@@ -544,6 +544,10 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
 #ifdef _HIP
     if (md->type == MAP_TYPE_DMABUF)
     {
+        /* Tag as HIP-origin for dual-backend async dispatch,
+         * regardless of fd retention. */
+        _nvm_dma_set_hip_origin(*handle);
+
         if (!md->retain_fd)
         {
             /* Non-RDMA: kernel holds refcount, close userspace fd */

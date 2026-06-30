@@ -34,13 +34,12 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
 
     g_driver.buf_registry[bufPtr_base].dma = dma;
 #if defined(_HIP) && defined(_CUDA)
-    /* Dual-backend: detect actual backend from mapping type.
+    /* Dual-backend: detect actual backend from mapping origin.
      * nvm_dma_map_device_ex may route to HIP even with flags=0
-     * (runtime pointer probing). Check if the mapping is dmabuf-based
-     * to determine the correct backend for async dispatch. */
+     * (runtime pointer probing). Check hip_origin tag which persists
+     * even after the dmabuf fd is closed post-kernel-import. */
     g_driver.buf_registry[bufPtr_base].backend =
-        (nvm_dma_get_dmabuf_info(dma, nullptr, nullptr, nullptr) == 0)
-            ? UGDS_BACKEND_HIP : UGDS_BACKEND_CUDA;
+        nvm_dma_is_hip_origin(dma) ? UGDS_BACKEND_HIP : UGDS_BACKEND_CUDA;
 #else
     g_driver.buf_registry[bufPtr_base].backend =
         (flags & NVM_MAP_DMABUF) ? UGDS_BACKEND_HIP : UGDS_BACKEND_DEFAULT;

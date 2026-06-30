@@ -16,6 +16,17 @@ static void async_io_callback(void* userData)
     ssize_t ret = do_io_internal(req->fh, req->bufPtr_base, size,
                                   file_offset, bufPtr_offset, req->opcode);
     *req->bytes_done_p = ret;
+
+    /* Release the in-flight reference held by async_validate.
+     * do_io_internal manages its own reference for registered buffers,
+     * so this accounts for the enqueue-time increment only. */
+    {
+        std::lock_guard<std::mutex> drv_lock(g_driver.lock);
+        auto it = g_driver.buf_registry.find(req->bufPtr_base);
+        if (it != g_driver.buf_registry.end())
+            it->second.in_flight.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
     delete req;
 }
 
@@ -32,8 +43,14 @@ static uGDSError_t async_validate(uGDSHandle_t fh, void* bufPtr_base,
         return make_error(UGDS_INVALID_VALUE);
 
     std::lock_guard<std::mutex> drv_lock(g_driver.lock);
-    if (g_driver.buf_registry.find(bufPtr_base) == g_driver.buf_registry.end())
+    auto it = g_driver.buf_registry.find(bufPtr_base);
+    if (it == g_driver.buf_registry.end())
         return make_error(UGDS_INVALID_VALUE);
+
+    /* Hold in-flight reference from enqueue until callback completes.
+     * This prevents uGDSBufDeregister from unmapping the buffer
+     * while the async request is queued but not yet executed. */
+    it->second.in_flight.fetch_add(1, std::memory_order_acq_rel);
 
     return UGDS_OK;
 }
@@ -142,6 +159,14 @@ static uGDSError_t async_launch_host_func(ugsd_stream_t stream,
 }
 #endif
 
+static void async_release_inflight(void* bufPtr_base)
+{
+    std::lock_guard<std::mutex> drv_lock(g_driver.lock);
+    auto it = g_driver.buf_registry.find(bufPtr_base);
+    if (it != g_driver.buf_registry.end())
+        it->second.in_flight.fetch_sub(1, std::memory_order_acq_rel);
+}
+
 /* ── Public async API (void* stream for dual-backend support) ── */
 
 extern "C" uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void* bufPtr_base,
@@ -164,9 +189,17 @@ extern "C" uGDSError_t uGDSReadAsync(uGDSHandle_t fh, void* bufPtr_base,
         if (it != g_driver.buf_registry.end())
             backend = it->second.backend;
     }
-    return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_READ, backend);
+    {
+        uGDSError_t est = async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_READ, backend);
+        if (est.err != UGDS_SUCCESS) async_release_inflight(bufPtr_base);
+        return est;
+    }
 #else
-    return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_READ);
+    {
+        uGDSError_t est = async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_READ);
+        if (est.err != UGDS_SUCCESS) async_release_inflight(bufPtr_base);
+        return est;
+    }
 #endif
 }
 
@@ -190,9 +223,17 @@ extern "C" uGDSError_t uGDSWriteAsync(uGDSHandle_t fh, void* bufPtr_base,
         if (it != g_driver.buf_registry.end())
             backend = it->second.backend;
     }
-    return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_WRITE, backend);
+    {
+        uGDSError_t est = async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_WRITE, backend);
+        if (est.err != UGDS_SUCCESS) async_release_inflight(bufPtr_base);
+        return est;
+    }
 #else
-    return async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_WRITE);
+    {
+        uGDSError_t est = async_launch_host_func((ugsd_stream_t)stream, req, NVM_IO_WRITE);
+        if (est.err != UGDS_SUCCESS) async_release_inflight(bufPtr_base);
+        return est;
+    }
 #endif
 }
 
