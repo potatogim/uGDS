@@ -83,6 +83,13 @@ static int ioctl_map(const struct device* dev, const struct va_range* va, uint64
             int err = ioctl(dev->fd, NVM_MAP_DMABUF_MEMORY, &request);
             if (err < 0)
             {
+                /* The kernel module returns EINVAL from its default
+                 * ioctl switch case when not built with
+                 * HAVE_CUDA_DMABUF. Translate to ENOTSUP so callers
+                 * can report UGDS_IO_NOT_SUPPORTED rather than a
+                 * confusing pinning-failure error. */
+                if (errno == EINVAL)
+                    return ENOTSUP;
                 dprintf("DMA-buf kernel request failed: %s\n", strerror(errno));
                 return errno;
             }

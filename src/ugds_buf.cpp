@@ -27,11 +27,7 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
                                        const_cast<void*>(bufPtr_base), length,
                                        flags);
     if (status != 0 || dma == nullptr) {
-        /* ENOTSUP or EINVAL when dmabuf flags are set indicates the
-         * kernel module was not built with HAVE_CUDA_DMABUF and the
-         * ioctl fell into its default case returning EINVAL. */
-        if (status == ENOTSUP ||
-            (status == EINVAL && (flags & NVM_MAP_DMABUF)))
+        if (status == ENOTSUP)
             return make_error(UGDS_IO_NOT_SUPPORTED);
         return make_error(UGDS_GPU_MEMORY_PINNING_FAILED);
     }
