@@ -66,14 +66,16 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
         flags |= NVM_MAP_DMABUF;
-        flags |= NVM_MAP_RDMA;  /* retain dmabuf fd for export */
+        if (config->enable_export)
+            flags |= NVM_MAP_RDMA;  /* retain dmabuf fd for export */
 #endif
         break;
     case UGDS_BACKEND_CUDA:
 #ifndef _CUDA
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
-        flags |= NVM_MAP_RDMA;  /* enable dmabuf export path */
+        if (config->enable_export)
+            flags |= NVM_MAP_RDMA;  /* enable dmabuf export path */
 #endif
         break;
     default:
