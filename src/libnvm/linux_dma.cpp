@@ -214,7 +214,7 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
 #endif
 
     /* Reject unknown flags */
-    if (flags & ~(NVM_MAP_DMABUF | NVM_MAP_RDMA))
+    if (flags & ~(NVM_MAP_DMABUF | NVM_MAP_RDMA | NVM_MAP_FORCE_CUDA))
     {
         dprintf("nvm_dma_map_device: unknown flags 0x%x\n", flags);
         return EINVAL;
@@ -232,6 +232,13 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
     if (flags & NVM_MAP_DMABUF)
     {
         use_hip = 1;
+    }
+    else if (flags & NVM_MAP_FORCE_CUDA)
+    {
+        /* Explicit CUDA selection — skip auto-probe to avoid accepting
+         * a HIP pointer or rejecting a valid non-current-context CUDA
+         * pointer. */
+        use_hip = 0;
     }
     else if (!(flags & NVM_MAP_RDMA))
     {

@@ -74,8 +74,9 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
 #ifndef _CUDA
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
+        flags |= NVM_MAP_FORCE_CUDA;  /* skip auto-probe in dual-backend */
         if (config->enable_export)
-            flags |= NVM_MAP_RDMA;  /* enable dmabuf export path */
+            flags |= NVM_MAP_RDMA;    /* enable dmabuf export path */
 #endif
         break;
     default:
