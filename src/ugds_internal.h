@@ -77,10 +77,13 @@ struct DriverState {
     std::mutex                                    lock;
     nvm_ctrl_t*                                   default_ctrl = nullptr;
 
-    /* Buffer registry with backend tracking for dual-backend dispatch */
+    /* Buffer registry with backend tracking for dual-backend dispatch.
+     * in_flight counts active IO references to prevent use-after-free
+     * during concurrent Deregister. */
     struct BufEntry {
-        nvm_dma_t*       dma;
-        uGDSBackend_t    backend;
+        nvm_dma_t*           dma;
+        uGDSBackend_t        backend;
+        std::atomic<uint32_t> in_flight{0};
     };
     std::unordered_map<const void*, BufEntry>     buf_registry;
 };

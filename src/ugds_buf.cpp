@@ -32,10 +32,19 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
         return make_error(UGDS_GPU_MEMORY_PINNING_FAILED);
     }
 
-    g_driver.buf_registry[bufPtr_base] = {
-        dma,
-        (flags & NVM_MAP_DMABUF) ? UGDS_BACKEND_HIP : UGDS_BACKEND_DEFAULT
-    };
+    g_driver.buf_registry[bufPtr_base].dma = dma;
+#if defined(_HIP) && defined(_CUDA)
+    /* Dual-backend: detect actual backend from mapping type.
+     * nvm_dma_map_device_ex may route to HIP even with flags=0
+     * (runtime pointer probing). Check if the mapping is dmabuf-based
+     * to determine the correct backend for async dispatch. */
+    g_driver.buf_registry[bufPtr_base].backend =
+        (nvm_dma_get_dmabuf_info(dma, nullptr, nullptr, nullptr) == 0)
+            ? UGDS_BACKEND_HIP : UGDS_BACKEND_CUDA;
+#else
+    g_driver.buf_registry[bufPtr_base].backend =
+        (flags & NVM_MAP_DMABUF) ? UGDS_BACKEND_HIP : UGDS_BACKEND_DEFAULT;
+#endif
     return UGDS_OK;
 }
 
@@ -96,6 +105,12 @@ extern "C" uGDSError_t uGDSBufDeregister(const void* bufPtr_base) {
     auto it = g_driver.buf_registry.find(bufPtr_base);
     if (it == g_driver.buf_registry.end()) {
         return make_error(UGDS_MEMORY_NOT_REGISTERED);
+    }
+
+    /* Reject deregister if IO is in-flight on this buffer.
+     * Caller must wait for outstanding operations to complete. */
+    if (it->second.in_flight.load(std::memory_order_acquire) > 0) {
+        return make_error(UGDS_BUSY);
     }
 
     nvm_dma_unmap(it->second.dma);

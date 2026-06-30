@@ -98,7 +98,11 @@ int main(int argc, char** argv) {
     st = uGDSBufDeregister(d_buf);
     ASSERT_OK(st, "BufDeregister after export close");
 
-    /* ── 6. Export on non-dmabuf buffer → IO_NOT_SUPPORTED ── */
+    /* ── 6. Export on non-dmabuf buffer → IO_NOT_SUPPORTED ──
+     * On CUDA builds, TEST_BUF_FLAGS=0 so the buffer is mapped via
+     * the standard CUDA P2P path (no dmabuf fd retained).
+     * On HIP builds, TEST_BUF_FLAGS=UGDS_REGISTER_DMABUF but the fd
+     * is not retained (no NVM_MAP_RDMA), so export still fails. */
     void* d_buf2 = nullptr;
     cudaMalloc(&d_buf2, buf_size);
     if (!d_buf2) TEST_FAIL("cudaMalloc(2) failed");

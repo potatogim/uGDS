@@ -28,7 +28,7 @@ typedef void (*release)(struct map*);
 struct map
 {
     struct list_node    list;           /* Linked list header */
-    struct task_struct* owner;          /* Owner of mapping */
+    pid_t               owner_tgid;     /* Owner thread group id (process) */
     u64                 vaddr;          /* Starting virtual address */
     struct list*        ctrl_list;
     struct pci_dev*     pdev;           /* Reference to physical PCI device */

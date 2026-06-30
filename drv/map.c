@@ -50,7 +50,7 @@ static struct map* create_descriptor(const struct ctrl* ctrl, u64 vaddr, unsigne
 
     list_node_init(&map->list);
 
-    map->owner = current;
+    map->owner_tgid = task_tgid_nr(current);
     map->vaddr = vaddr;
     map->pdev = ctrl->pdev;
     map->page_size = 0;
@@ -93,7 +93,7 @@ struct map* map_find(const struct list* list, u64 vaddr)
     {
         map = container_of(element, struct map, list);
 
-        if (map->owner == current)
+        if (map->owner_tgid == task_tgid_nr(current))
         {
             /* Match address using the mapping's own page size.
              * Previously the unconditional GPU_PAGE_MASK (64 KiB)
