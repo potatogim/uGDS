@@ -83,8 +83,11 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
     uGDSError_t st = uGDSBufRegister(bufPtr_base, length, flags);
     if (st.err != UGDS_SUCCESS) return st;
 
-    /* Store backend for runtime dispatch */
-    {
+    /* Store backend for runtime dispatch.
+     * Skip overwrite when config->backend is DEFAULT — uGDSBufRegister
+     * already detected the correct backend from the mapping origin.
+     * Overwriting with DEFAULT would confuse dual-backend async dispatch. */
+    if (config->backend != UGDS_BACKEND_DEFAULT) {
         std::lock_guard<std::mutex> guard(g_driver.lock);
         auto it = g_driver.buf_registry.find(bufPtr_base);
         if (it != g_driver.buf_registry.end()) {

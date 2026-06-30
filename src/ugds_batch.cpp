@@ -498,10 +498,12 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
     }
 
     /* Best-effort: release in-flight references for entries that were
-     * submitted but never completed (e.g., hardware timeout). */
+     * submitted but never completed (e.g., hardware timeout or submit
+     * phase-3 early return). Covers both PENDING and WAITING states. */
     for (unsigned i = 0; i < bs->n_entries; ++i) {
         BatchIOEntry& entry = bs->entries[i];
-        if (entry.status == UGDS_BATCH_PENDING) {
+        if (entry.status == UGDS_BATCH_PENDING ||
+            entry.status == UGDS_BATCH_WAITING) {
             async_release_inflight_batch(entry.devPtr_base);
             entry.status = UGDS_BATCH_FAILED;
         }
