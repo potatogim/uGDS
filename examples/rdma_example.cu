@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #ifdef UGDS_ENABLE_RDMA
 #include <infiniband/verbs.h>
@@ -127,7 +128,11 @@ int main(int argc, char** argv)
 
     /* Single cleanup path */
     printf("Phase 3: Teardown\n");
-    if (mr) { ibv_dereg_mr(mr); printf("  MR deregistered\n"); }
+    if (mr) {
+        if (ibv_dereg_mr(mr) != 0)
+            fprintf(stderr, "Warning: ibv_dereg_mr failed: %s\n", strerror(errno));
+        printf("  MR deregistered\n");
+    }
     if (dmabuf_fd >= 0) { close(dmabuf_fd); printf("  Export fd closed\n"); }
     if (buf_registered) { uGDSBufDeregister(d_buf); printf("  uGDS buffer deregistered\n"); }
     if (d_buf) { cudaFree(d_buf); printf("  GPU memory freed\n"); }
