@@ -63,7 +63,7 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         /* Export requires an explicit backend so the correct dma-buf
          * path is selected. DEFAULT relies on auto-probe which does
          * not retain an exportable fd. */
-        if (config->enable_export)
+        if (config->enable_export || config->enable_rdma)
             return make_error(UGDS_INVALID_VALUE);
         break;
     case UGDS_BACKEND_HIP:
@@ -71,8 +71,8 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
         flags |= NVM_MAP_DMABUF;
-        if (config->enable_export)
-            flags |= NVM_MAP_RDMA;  /* retain dmabuf fd for export */
+        if (config->enable_export || config->enable_rdma)
+            flags |= NVM_MAP_RDMA;  /* retain dmabuf fd for export/RDMA */
 #endif
         break;
     case UGDS_BACKEND_CUDA:
@@ -80,8 +80,8 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
         flags |= NVM_MAP_FORCE_CUDA;  /* skip auto-probe in dual-backend */
-        if (config->enable_export)
-            flags |= NVM_MAP_RDMA;    /* enable dmabuf export path */
+        if (config->enable_export || config->enable_rdma)
+            flags |= NVM_MAP_RDMA;    /* enable dmabuf export/RDMA path */
 #endif
         break;
     default:
@@ -121,6 +121,21 @@ extern "C" uGDSError_t uGDSBufDeregister(const void* bufPtr_base) {
      * Caller must wait for outstanding operations to complete. */
     if (it->second.in_flight.load(std::memory_order_acquire) > 0) {
         return make_error(UGDS_BUSY);
+    }
+
+    /* Reject deregister if active RDMA MRs reference this buffer.
+     * Caller must uGDSRDMAUnregister all MRs first. */
+    auto rdma_it = g_driver.rdma_records.find(bufPtr_base);
+    if (rdma_it != g_driver.rdma_records.end()) {
+        for (const auto& rec : rdma_it->second) {
+            if (rec.state == DriverState::RDMA_REC_ACTIVE ||
+                rec.state == DriverState::RDMA_REC_PENDING)
+            {
+                return make_error(UGDS_RDMA_MR_STILL_ACTIVE);
+            }
+        }
+        /* All records are DEREGISTERING or empty — safe to clean up */
+        g_driver.rdma_records.erase(rdma_it);
     }
 
     nvm_dma_unmap(it->second.dma);

@@ -61,7 +61,7 @@ extern "C" uGDSError_t uGDSRDMARegister(const void* bufPtr_base,
             std::lock_guard<std::mutex> guard(g_driver.lock);
             auto map_it = g_driver.rdma_records.find(bufPtr_base);
 
-            // R7-M-01: fail-closed
+            // Fail-closed: record vanished during registration
             if (map_it == g_driver.rdma_records.end()) {
                 ibv_dereg_mr(mr);
                 close(exp.fd);
