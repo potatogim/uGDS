@@ -1,4 +1,5 @@
 build/
+build-*
 cufile.log
 
 # Kernel module build artifacts
