@@ -63,7 +63,7 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         /* Export requires an explicit backend so the correct dma-buf
          * path is selected. DEFAULT relies on auto-probe which does
          * not retain an exportable fd. */
-        if (config->enable_export || config->enable_rdma)
+        if (config->enable_export)
             return make_error(UGDS_INVALID_VALUE);
         break;
     case UGDS_BACKEND_HIP:
@@ -71,7 +71,7 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
         flags |= NVM_MAP_DMABUF;
-        if (config->enable_export || config->enable_rdma)
+        if (config->enable_export)
             flags |= NVM_MAP_RDMA;  /* retain dmabuf fd for export/RDMA */
 #endif
         break;
@@ -80,7 +80,7 @@ extern "C" uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
         return make_error(UGDS_PLATFORM_NOT_SUPPORTED);
 #else
         flags |= NVM_MAP_FORCE_CUDA;  /* skip auto-probe in dual-backend */
-        if (config->enable_export || config->enable_rdma)
+        if (config->enable_export)
             flags |= NVM_MAP_RDMA;    /* enable dmabuf export/RDMA path */
 #endif
         break;
@@ -124,17 +124,20 @@ extern "C" uGDSError_t uGDSBufDeregister(const void* bufPtr_base) {
     }
 
     /* Reject deregister if active RDMA MRs reference this buffer.
-     * Caller must uGDSRDMAUnregister all MRs first. */
+     * Caller must uGDSRDMAUnregister all MRs first.
+     * DEREGISTERING state also blocks: ibv_dereg_mr may still be
+     * in progress on another thread, and buffer unmap could race. */
     auto rdma_it = g_driver.rdma_records.find(bufPtr_base);
     if (rdma_it != g_driver.rdma_records.end()) {
         for (const auto& rec : rdma_it->second) {
             if (rec.state == DriverState::RDMA_REC_ACTIVE ||
-                rec.state == DriverState::RDMA_REC_PENDING)
+                rec.state == DriverState::RDMA_REC_PENDING ||
+                rec.state == DriverState::RDMA_REC_DEREGISTERING)
             {
                 return make_error(UGDS_RDMA_MR_STILL_ACTIVE);
             }
         }
-        /* All records are DEREGISTERING or empty — safe to clean up */
+        /* All records are empty — safe to clean up */
         g_driver.rdma_records.erase(rdma_it);
     }
 

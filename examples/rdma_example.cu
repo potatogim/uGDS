@@ -67,7 +67,7 @@ int main(int argc, char** argv)
         uGDSBufConfig_t cfg;
         memset(&cfg, 0, sizeof(cfg));
         cfg.backend = UGDS_BACKEND_CUDA;
-        cfg.enable_rdma = 1;
+        cfg.enable_export = true;
         st = uGDSBufRegisterEx(d_buf, buf_size, &cfg);
         if (st.err != UGDS_SUCCESS) {
             fprintf(stderr, "uGDSBufRegisterEx failed: %s\n", UGDS_ERRSTR(st.err));

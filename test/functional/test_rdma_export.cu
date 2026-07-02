@@ -6,7 +6,7 @@
 /* Test: RDMA dmabuf export lifecycle
  *
  * Verifies:
- * - uGDSBufRegisterEx with enable_rdma produces a valid dmabuf export
+ * - uGDSBufRegisterEx with enable_export produces a valid dmabuf export
  * - uGDSExportDmabuf returns a dup'd fd (different from internal)
  * - Export fd is valid (can be used for ioctl)
  * - NVMe I/O still works after export
@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
 #else
         UGDS_BACKEND_CUDA;
 #endif
-    cfg.enable_rdma = 1;
+    cfg.enable_export = true;
 
     st = uGDSBufRegisterEx(d_buf, buf_size, &cfg);
     if (st.err != UGDS_SUCCESS) {

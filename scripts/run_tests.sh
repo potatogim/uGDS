@@ -169,6 +169,7 @@ run_functional() {
         test_async_late_binding
         test_async_errors
         test_async_multi_stream
+        test_dmabuf_export
     )
 
     # RDMA tests (only if built)

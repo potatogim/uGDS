@@ -149,7 +149,6 @@ typedef enum uGDSBackend {
 typedef struct uGDSBufConfig {
     uGDSBackend_t   backend;
     bool            enable_export;  /* request dma-buf fd for RDMA/peer export */
-    int             enable_rdma;    /* alias for enable_export (back-compat) */
 } uGDSBufConfig_t;
 
 uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
