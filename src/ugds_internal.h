@@ -42,7 +42,7 @@
 struct HandleState;
 static inline void handle_release(HandleState* hs);
 
-/* --- Per-IO resolved segment (SGL design section 2) --------------------- */
+/* --- Per-IO resolved segment ------------------------------------------- */
 /* A segment resolved against the buffer registry under one g_driver.lock
  * hold.  Identity fields (dma, base, registered_length, backend) are
  * immutable snapshots valid as long as the owning SglRefOwner holds its
@@ -51,13 +51,13 @@ static inline void handle_release(HandleState* hs);
 struct SegView {
     nvm_dma_t*     dma;
     const void*    base;               /* registry key, for release/park */
-    size_t         registered_length;  /* snapshot of BufEntry::length (C1) */
-    uGDSBackend_t  backend;            /* snapshot, for async dispatch (M2) */
+    size_t         registered_length;  /* snapshot of BufEntry::length */
+    uGDSBackend_t  backend;            /* snapshot, for async dispatch */
     size_t         page_start;         /* offset / MPS (offset MPS-aligned) */
     size_t         size;               /* bytes */
 };
 
-/* --- Reference ownership (SGL design section 2, C4/M5/M-3) --------------- */
+/* --- Reference ownership ----------------------------------------------- */
 /* Owns one in_flight reference per SGL occurrence.  Duplicate bases are
  * intentionally repeated.  The representation has capacity for the public
  * maximum and never allocates; this is ~8 KiB on LP64 and is stored in
@@ -83,7 +83,7 @@ public:
      * failure rolls back 0..k-1 inside the same hold.  Returns 0 on success
      * or -EINVAL.  No reserve/growth/allocation exists.
      *
-     * hs_ctrl is the submitting handle's controller (INV-AFFINITY, 5.3).
+     * hs_ctrl is the submitting handle's controller (for affinity check).
      * page_size is MPS for the offset-alignment and page-index math.
      * seg_views_out (optional): if non-null, resolved SegView[] filled
      * (identity + geometry; page_start uses segs[k].offset). */
@@ -93,10 +93,11 @@ public:
                 SegView* seg_views_out = nullptr);
 
     /* acquire_identity_only(segs, nr): like acquire() but performs only the
-     * registration + INV-AFFINITY checks and the in_flight reference
-     * acquisition.  INV-LEN (registered-range bound on offset/size) is
-     * deliberately skipped because the async path defers offset/size
-     * validation to the stream callback (late binding, section 6.3).
+     * registration + controller affinity checks and the in_flight
+     * reference acquisition.  The registered-range bound on
+     * offset/size is deliberately skipped because the async path
+     * defers offset/size validation to the stream callback
+     * (late binding).
      *
      * seg_views_out (optional): if non-null, identity-only SegView[] is
      * filled -- dma, base, registered_length, and backend are snapshotted;
@@ -114,8 +115,8 @@ public:
     /* disarm(): set size_ = 0 so the destructor does not release.
      * The acquired in_flight references remain in the registry; the
      * caller becomes responsible for releasing them by other means
-     * (C1, review codex-sgl-impl-p2-r1: batch owns the release via
-     * kind-aware drain_release_scratch). */
+     * (the batch owns the release via kind-aware
+     * drain_release_scratch). */
     void disarm() noexcept { size_ = 0; }
 };
 
@@ -123,7 +124,7 @@ static_assert(std::is_nothrow_move_constructible<SglRefOwner>::value);
 static_assert(std::is_nothrow_move_assignable<SglRefOwner>::value);
 static_assert(UGDS_IOV_MAX <= UINT16_MAX);
 
-/* --- Sync handle-operation ownership (V6-M-1) --------------------------- */
+/* --- Sync handle-operation ownership ----------------------------------- */
 /* handle_lookup() increments the bare HandleState::handle_in_flight counter
  * independently of the returned shared_ptr.  This non-allocating guard is
  * constructed immediately after a successful lookup and must be declared
@@ -152,7 +153,7 @@ public:
 
 static_assert(std::is_nothrow_destructible<HandleOpGuard>::value);
 
-/* --- Engine result (C4) ------------------------------------------------- */
+/* --- Engine result ------------------------------------------------------ */
 /* An integer alone cannot drive cleanup: the caller must know whether the
  * engine consumed (parked) the resource owners. */
 struct IovEngineResult {
@@ -163,7 +164,7 @@ struct IovEngineResult {
                            caller's owner is empty / dma pointer stolen */
 };
 
-/* --- Command window (SGL design section 2) ------------------------------ */
+/* --- Command window ---------------------------------------------------- */
 struct CmdWindow {
     uint32_t     first_seg;          /* index into SegView[] */
     uint32_t     n_segs;             /* slices spanned by this command */
@@ -173,7 +174,7 @@ struct CmdWindow {
     size_t       n_pages;            /* ceil-sum of slice pages; <= MPS/8 + 1 */
 };
 
-/* --- SglWindowCursor (SGL design section 4.2) --------------------------- */
+/* --- SglWindowCursor --------------------------------------------------- */
 /* Stateful, allocation-free forward generator.  next() emits at most one
  * window and advances (seg_idx, bytes_in_seg, open-window state).  It never
  * owns or materializes an array of CmdWindow objects. */
@@ -203,7 +204,7 @@ bool sgl_count_windows_analytic(const uGDSIoSegment_t* segs,
                                 size_t block_size,
                                 uint32_t* out) noexcept;
 
-/* --- SglPageCursor (SGL design section 3.2) ----------------------------- */
+/* --- SglPageCursor ----------------------------------------------------- */
 /* Forward iterator over the MPS page addresses of a window.  Replaces
  * buf_dma->ioaddrs[current_page + i] in the PRP builders.  Tracks position
  * across segment boundaries.
@@ -243,7 +244,7 @@ struct IOQueuePair {
      * At most one synchronous operation can hold this QP lock.
      * timeout_dma: on-the-fly (1-buf) mapping parked by the scalar engine.
      * timeout_registered_base: a registered-buffer base whose in_flight
-     *   ref was parked by the legacy scalar path (M4/F7 fix).  The ref
+     *   ref was parked by the legacy scalar path.  The ref
      *   is released by cleanup_timeout_resources.
      * timeout_refs: fixed-capacity registered-ref owner parked by the SGL
      *               engine (also used by the refactored scalar path). */
@@ -473,7 +474,7 @@ struct BatchState {
     std::vector<uint32_t> release_scratch;
     uint32_t              n_release_pending = 0;
 
-    /* SGL segment arena for vectored batch entries (design 6.2).
+    /* SGL segment arena for vectored batch entries.
      * Fixed-size, lazily resized to capacity * UGDS_BATCH_IOV_MAX at the
      * first Submitv call; never resized again.  recycle resets
      * arena_used to 0 but never touches size()/capacity.  Each vectored
@@ -491,9 +492,9 @@ struct BatchState {
     std::shared_ptr<BatchState> self;
 };
 
-/* SubCmdV: one windowed sub-command for vectored batch submit (design 6.2).
- * The work array is sized to the analytic total_cmds in Phase 1 and filled
- * in Phase 2 by SglWindowCursor.  Phase 3 iterates [0, work_used) and
+/* SubCmdV: one windowed sub-command for vectored batch submit.
+ * The work array is sized to the analytic total_cmds, then filled by
+ * SglWindowCursor.  The enqueue loop iterates [0, work_used) and
  * enqueues one NVMe command per element.  window references segments in
  * bs->seg_arena[entry.seg_begin .. entry.seg_begin+seg_count). */
 struct SubCmdV {
@@ -502,8 +503,8 @@ struct SubCmdV {
     CmdWindow window;        /* window geometry (bytes, n_pages, etc.) */
 };
 
-/* C1 (review codex-sgl-impl-p2-r1): kind-aware release of in-flight
- * reference(s) held by a batch entry.  Defined in ugds_batch.cpp.
+/* Kind-aware release of the in-flight reference(s) held by a batch
+ * entry.  Defined in ugds_batch.cpp.
  * - BATCH_ENTRY_PLAIN: one ref at entry.devPtr_base.
  * - BATCH_ENTRY_VECTORED: one ref per base in
  *   bs->seg_arena[entry.seg_begin .. seg_begin + seg_count).
@@ -522,13 +523,13 @@ static inline uGDSError_t make_error(uGDSOpError err) {
 ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
                        off_t file_offset, off_t bufPtr_offset, uint8_t opcode);
 
-/* --- SGL engine (section 6.1) ------------------------------------------ */
+/* --- SGL engine -------------------------------------------------------- */
 
 /* Publish PRP list stores before the doorbell/data pointer.  Centralizes the
- * platform DMA-publish contract (MINOR-4): on x86-64 the seq_cst fence is
- * sufficient because PRP lists live in cache-coherent host memory and normal
- * stores are ordered before the subsequent MMIO doorbell write.  Porting to
- * a weaker platform changes this one helper. */
+ * platform DMA-publish contract: on x86-64 the seq_cst fence is sufficient
+ * because PRP lists live in cache-coherent host memory and normal stores
+ * are ordered before the subsequent MMIO doorbell write.  Porting to a
+ * weaker platform changes this one helper. */
 static inline void sgl_publish_prp() noexcept {
     std::atomic_thread_fence(std::memory_order_seq_cst);
 }
@@ -537,8 +538,7 @@ static inline void sgl_publish_prp() noexcept {
  * Defined in ugds_io.cpp; shared with ugds_iov.cpp. */
 nvm_cpl_t* wait_for_completion(HandleState* hs, IOQueuePair& qp);
 
-/* Streaming windowed IO engine shared by scalar and vectored sync paths
- * (SGL design section 6.1).
+/* Streaming windowed IO engine shared by scalar and vectored sync paths.
  *
  * hs: submitting handle state (must already be lookup-acquired).
  * segs: resolved segment views (identity + geometry complete).
@@ -583,10 +583,10 @@ struct AsyncRequest {
      * itself becomes move-only; the public async path only heap-allocates it
      * via new and deletes it from the callback, so no copy is required.
      *
-     * MAJOR-1 (review codex-sgl-impl-p3-r1): resolved[] is owned by the
-     * request.  resolved_owns_heap records whether it points at a heap
-     * allocation (nr_segs > 4); the destructor releases it so every
-     * callback path frees it via a single `delete req`. */
+     * resolved[] is owned by the request.  resolved_owns_heap records
+     * whether it points at a heap allocation (nr_segs > 4); the
+     * destructor releases it so every callback path frees it via a
+     * single `delete req`. */
     uGDSIoSegment_t* user_segs = nullptr;
     unsigned         nr_segs = 0;
     SegView*         resolved = nullptr;  /* resolved segments (inline/heap) */
@@ -595,13 +595,12 @@ struct AsyncRequest {
     uGDSBackend_t    launch_backend = UGDS_BACKEND_DEFAULT;
 
     /* Inline SegView storage for the common nr <= 4 case (no heap at
-     * callback time, section 6.3).  resolved points here when nr_segs
-     * is in [1, 4]; otherwise it points at the heap allocation performed
-     * at enqueue. */
+     * callback time).  resolved points here when nr_segs is in [1, 4];
+     * otherwise it points at the heap allocation performed at enqueue. */
     SegView          inline_resolved[4];
 
-    /* MAJOR-1: owning destructor.  When the callback (or any early-return
-     * path) does `delete req`, the heap resolved[] is freed exactly once.
+    /* Owning destructor.  When the callback (or any early-return path)
+     * does `delete req`, the heap resolved[] is freed exactly once.
      * inline_resolved is not heap-allocated, so it is left alone. */
     ~AsyncRequest() noexcept {
         if (resolved_owns_heap) {

@@ -1,7 +1,7 @@
 /* ugds_async.cpp -- Asynchronous vectored IO on CUDA/HIP streams.
  *
  * Public APIs implemented here:
- *   - uGDSReadvAsync  / uGDSWritevAsync   (Phase 3, SGL design section 6.3)
+ *   - uGDSReadvAsync  / uGDSWritevAsync   (vectored async IO)
  *
  * Internal functions:
  *   - async_validate_v       (handle lookup + identity-only ref acquisition)
@@ -9,7 +9,7 @@
  *   - async_iov_execute       (callback body: late binding + engine dispatch)
  *   - async_iov_callback      (noexcept exception boundary around execute)
  *
- * Late binding contract (SGL design v7 section 6.3):
+ * Late binding contract:
  *   - segs[i].base is read at enqueue (validation + in-flight refs) and
  *     MUST NOT change afterwards.
  *   - segs[i].offset, segs[i].size, and *file_offset_p are read in the
@@ -107,7 +107,7 @@ static uGDSError_t async_validate(uGDSHandle_t fh, void* bufPtr_base,
     if (it == g_driver.buf_registry.end())
         return make_error(UGDS_INVALID_VALUE);
 
-    /* INV-AFFINITY (C2 / design 5.3): validate against the submitting
+    /* Controller affinity check: validate against the submitting
      * handle's controller. */
     if (it->second.map_ctrl == nullptr)
         return make_error(UGDS_INVALID_VALUE);
@@ -128,7 +128,7 @@ static uGDSError_t async_validate(uGDSHandle_t fh, void* bufPtr_base,
         return make_error(UGDS_INVALID_VALUE);
     }
 
-    /* INV-AFFINITY (C2): controller at registration must match
+    /* Controller affinity check: controller at registration must match
      * the submitting handle's controller. */
     if (it->second.map_ctrl != hs->ctrl) {
         it->second.in_flight.fetch_sub(1, std::memory_order_acq_rel);
@@ -479,8 +479,8 @@ extern "C" uGDSError_t uGDSStreamDeregister(void* stream)
 #endif
 
 /* ======================================================================== */
-/* Phase 3: Vectored async (uGDSReadvAsync / uGDSWritevAsync)               */
-/* SGL design v7 section 6.3 (async path) + 6.4 (timeout ownership).       */
+/* Vectored async (uGDSReadvAsync / uGDSWritevAsync)                       */
+/* Async path + timeout ownership handling.                                */
 /* ======================================================================== */
 
 /* ---- Dual-backend stream-backend lookup helper ----
@@ -489,7 +489,7 @@ extern "C" uGDSError_t uGDSStreamDeregister(void* stream)
  * NULL streams.  Single-backend builds collapse to a compile-time active
  * backend.  This helper is separate from async_check_stream_backend so
  * that the async-vectored launch decision can read the stream backend
- * exactly once (M2 atomic snapshot). */
+ * exactly once (atomic snapshot). */
 static uGDSBackend_t iov_stream_backend_lookup(void* stream)
 {
 #if defined(_CUDA) && defined(__HIP_PLATFORM_AMD__)
@@ -510,7 +510,7 @@ static uGDSBackend_t iov_stream_backend_lookup(void* stream)
 #endif
 }
 
-/* ---- launch_backend decision (section 6.3 decision table) ----
+/* ---- launch_backend decision ----
  * A is the buffer backend when the list is homogeneous (the single
  * backend that every segment shares).  Single-backend builds reduce to
  * A == active backend and the "mixed" branches become unreachable at
@@ -552,10 +552,10 @@ static uGDSError_t iov_compute_launch_backend(uGDSBackend_t list_a,
 #endif
 }
 
-/* ---- async_validate_v (section 6.3) ----
+/* ---- async_validate_v ----
  * Under a single g_driver.lock hold:
  *  - resolve every segment in the registry (identity-only: dma/base/
- *    registered_length/backend), INV-AFFINITY check;
+ *    registered_length/backend), controller affinity check;
  *  - acquire in-flight refs all-or-nothing into req->owner via
  *    acquire_identity_only (registered-only);
  *  - capture a list_backend snapshot for the launch decision;
@@ -618,8 +618,8 @@ static uGDSError_t async_validate_v(uGDSHandle_t fh,
         }
     } hguard{hs, hs_sp_out, true};
 
-    /* INV-AFFINITY + ref acquisition.  handle_lookup_locked succeeded,
-     * so hs is valid for the lifetime of *hs_sp_out. */
+    /* Controller affinity check + ref acquisition.  handle_lookup_locked
+     * succeeded, so hs is valid for the lifetime of *hs_sp_out. */
     int rc = owner->acquire_identity_only(
         segs, static_cast<uint32_t>(nr_segs),
         hs->ctrl, resolved);
@@ -669,7 +669,7 @@ static uGDSError_t async_validate_v(uGDSHandle_t fh,
     return UGDS_OK;
 }
 
-/* ---- async_iov_execute (section 6.3, callback body) ----
+/* ---- async_iov_execute (callback body) ----
  * Potentially throwing: do_iov_engine acquires std::mutex and may throw.
  * The caller (async_iov_callback) is the noexcept exception boundary. */
 static void async_iov_execute(AsyncRequest* req)
@@ -684,7 +684,7 @@ static void async_iov_execute(AsyncRequest* req)
 
     /* 2. Complete resolved[] geometry and run the same per-segment value
      *    checks as sync do_readv_writev, but using the snapshotted
-     *    registered_length (C1).  This closes the late-binding window. */
+     *    registered_length.  This closes the late-binding window. */
     HandleState* hs = req->hs_sp.get();
     const size_t page_size  = hs->ctrl->page_size;
     const size_t block_size = hs->block_size;
@@ -703,7 +703,7 @@ static void async_iov_execute(AsyncRequest* req)
         }
         if ((us.size % block_size) != 0) { err_ret = -EINVAL; break; }
 
-        /* INV-LEN against the snapshotted registered_length (C1). */
+        /* Exact-length bound against the snapshotted registered_length. */
         const uint64_t off = static_cast<uint64_t>(us.offset);
         const uint64_t sz  = static_cast<uint64_t>(us.size);
         if (off > sv.registered_length ||
@@ -755,7 +755,7 @@ static void async_iov_execute(AsyncRequest* req)
     delete req;
 }
 
-/* ---- async_iov_callback (section 6.3, exception boundary) ----
+/* ---- async_iov_callback (exception boundary) ----
  * Declared noexcept-equivalent: any exception is caught and translated
  * to -EIO so nothing propagates into the CUDA/HIP runtime. */
 static void async_iov_callback(void* userData) noexcept
@@ -828,8 +828,8 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
                                          void* stream,
                                          uint8_t opcode)
 {
-    /* Malformed-call checks (8.1 value rows).  These do not need the
-     * registry and cannot race with Deregister. */
+    /* Malformed-call checks.  These do not need the registry and
+     * cannot race with Deregister. */
     if (!g_driver.initialized)
         return make_error(UGDS_DRIVER_NOT_INITIALIZED);
     if (fh == nullptr || segs == nullptr)
@@ -843,7 +843,7 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
      * deterministic value to the caller. */
     *bytes_done_p = 0;
 
-    /* MINOR-1: Validate base pointers before any allocation. */
+    /* Validate base pointers before any allocation. */
     for (unsigned i = 0; i < nr_segs; ++i) {
         if (segs[i].base == nullptr)
             return make_error(UGDS_INVALID_VALUE);
@@ -851,10 +851,10 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
 
     /* Allocate the request and its resolved[] storage BEFORE acquiring
      * any reference, so that allocation failure cannot strand an
-     * in_flight or handle_in_flight counter (M-3).  resolved[] uses the
+     * in_flight or handle_in_flight counter.  resolved[] uses the
      * inline slot for nr <= 4.
-     * MAJOR-3: unique_ptr owns req until successful launch; on any
-     * exception or early return it is automatically freed. */
+     * unique_ptr owns req until successful launch; on any exception or
+     * early return it is automatically freed. */
     auto req_guard = std::make_unique<AsyncRequest>();
     AsyncRequest* req = req_guard.get();
     req->fh            = fh;
@@ -878,8 +878,8 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
 
     /* async_validate_v acquires in-flight refs + handle ref, fills
      * resolved (identity-only), and snapshots list backend + mixed.
-     * MAJOR-1 (R3): handle ref guard ensures handle_release is called
-     * on exception between validation and successful launch. */
+     * The handle ref guard ensures handle_release is called on
+     * exception between validation and successful launch. */
     uGDSBackend_t list_backend = UGDS_BACKEND_DEFAULT;
     bool mixed = false;
     uGDSError_t st = async_validate_v(fh, segs, nr_segs, req->resolved,
@@ -897,7 +897,7 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
     } hguard{req->hs_sp.get(), true};
 
     /* Compute launch_backend ONCE from the snapshot list_backend and
-     * a single read of the stream backend (M2). */
+     * a single read of the stream backend. */
     uGDSBackend_t stream_backend = iov_stream_backend_lookup(stream);
     uGDSBackend_t launch_backend = UGDS_BACKEND_DEFAULT;
     uGDSError_t lberr = iov_compute_launch_backend(list_backend, mixed,

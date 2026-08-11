@@ -328,9 +328,9 @@ void uGDSBatchIODestroy(uGDSBatchHandle_t batch);
  * must not exceed the length passed at registration (the exact byte
  * length, not a page-rounded value).
  *
- * Refer to SGL design v7 section 2 for the segment model and section
- * 5.1 (INV-LEN) / 5.3 (INV-AFFINITY) for the registration invariants
- * enforced at acquire time. */
+ * The registration invariants enforced at acquire time are:
+ *   - registered-range bound on offset + size
+ *   - controller affinity between the buffer and the submitting handle */
 typedef struct uGDSIoSegment {
     void*   base;     /* registered buffer base (exact registry key) */
     off_t   offset;   /* byte offset inside base; must be MPS-aligned */
@@ -354,18 +354,15 @@ typedef struct uGDSIoSegment {
  * The segment array is fully consumed during the call (synchronous);
  * the caller may free/reuse it on return.
  *
- * Validation is performed up-front under g_driver.lock (INV-LEN exact-
- * length bound, INV-AFFINITY controller match, MPS alignment of offset,
+ * Validation is performed up-front under g_driver.lock (exact-length
+ * bound, controller affinity check, MPS alignment of offset,
  * block-multiple of size, overflow-safe total).  On timeout the handle
  * is marked wedged and -EIO is returned; a controller reset is then
- * required before the handle can be reused.
- *
- * Implemented in Phase 1 (SGL design v7 sections 1.2, 6.1, 8.1). */
+ * required before the handle can be reused. */
 ssize_t uGDSReadv(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
                     unsigned nr_segs, off_t file_offset);
 
-/* Vectored write.  Layout and error conventions match uGDSReadv.
- * Implemented in Phase 1 (SGL design v7 sections 1.2, 6.1, 8.1). */
+/* Vectored write.  Layout and error conventions match uGDSReadv. */
 ssize_t uGDSWritev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
                      unsigned nr_segs, off_t file_offset);
 
@@ -374,8 +371,7 @@ ssize_t uGDSWritev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
  * setup/status/destroy are shared with the existing batch object.
  *
  * 'segs' is copied at submit, so the caller may free iocb and the arrays
- * on return -- parity with uGDSBatchIOSubmit.  Implemented in Phase 2
- * (SGL design v7 section 6.2). */
+ * on return -- parity with uGDSBatchIOSubmit. */
 typedef struct uGDSIOSegParams {
     const uGDSIoSegment_t* segs;      /* copied at submit */
     unsigned               nr_segs;   /* <= UGDS_BATCH_IOV_MAX */
@@ -389,10 +385,10 @@ typedef struct uGDSIOSegParams {
  * completions are reaped via uGDSBatchIOGetStatus.  Plain and vectored
  * submits may be mixed on the same batch handle.
  *
- * Per-entry validation follows the 8.1 value matrix and the analytic
- * window counter (SGL design v7 section 4.2).  Preflight failures
- * become terminal FAILED entries with -EINVAL and contribute zero
- * commands to the work array.  Implemented in Phase 2 (section 6.2). */
+ * Per-entry validation follows the value matrix (alignment, sizes,
+ * overflow-safe total) and the analytic window counter.  Preflight
+ * failures become terminal FAILED entries with -EINVAL and contribute
+ * zero commands to the work array. */
 uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
                                  uGDSIOSegParams_t* iocb, unsigned flags);
 
@@ -407,14 +403,13 @@ uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
  *
  * *bytes_read_p is pre-zeroed at enqueue and written exactly once
  * (either -errno on validation/launch failure, or the callback's
- * result).  Implemented in Phase 3 (SGL design v7 section 6.3). */
+ * result). */
 uGDSError_t uGDSReadvAsync(uGDSHandle_t fh, uGDSIoSegment_t* segs,
                              unsigned nr_segs, off_t* file_offset_p,
                              ssize_t* bytes_read_p, void* stream);
 
 /* Vectored async write on a CUDA/HIP stream.  Binding contract and
- * lifecycle match uGDSReadvAsync.  Implemented in Phase 3 (SGL design
- * v7 section 6.3). */
+ * lifecycle match uGDSReadvAsync. */
 uGDSError_t uGDSWritevAsync(uGDSHandle_t fh, uGDSIoSegment_t* segs,
                               unsigned nr_segs, off_t* file_offset_p,
                               ssize_t* bytes_written_p, void* stream);

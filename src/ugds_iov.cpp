@@ -1,7 +1,14 @@
+/*
+ * Copyright (c) 2024, Guanyi Chen <felixlinker02@gmail.com>
+ * Copyright (c) 2017, Jonas Markauss <jonassm@ifi.uio.no>
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
 /* uGDS SGL (scatter-gather) streaming engine and sync vectored API.
  *
  * Public APIs implemented here:
- *   - uGDSReadv / uGDSWritev       (Phase 1, sync vectored IO)
+ *   - uGDSReadv / uGDSWritev       (sync vectored IO)
  *
  * Internal primitives implemented here (consumed by ugds_batch.cpp and
  * ugds_async.cpp):
@@ -12,20 +19,18 @@
  * Implements the pure streaming primitives (SglPageCursor,
  * SglWindowCursor, analytic counter), the fixed-capacity reference
  * owner (SglRefOwner), the shared windowed IO engine (do_iov_engine),
- * and the public sync vectored entry points (uGDSReadv/uGDSWritev) per
- * SGL design v7 sections 2-6.1.
+ * and the public sync vectored entry points (uGDSReadv/uGDSWritev).
  *
  * Design constraints honored here:
  *  - SglWindowCursor yields one CmdWindow at a time into caller-local
- *    storage; no array of windows is ever materialized (independent M-2).
+ *    storage; no array of windows is ever materialized.
  *  - SglRefOwner is fixed-capacity for UGDS_IOV_MAX and never allocates;
- *    it is noexcept move-only so timeout parking is a bounded array move
- *    (independent M-3, section 6.4).
+ *    it is noexcept move-only so timeout parking is a bounded array move.
  *  - HandleOpGuard owns the handle-operation reference from immediately
  *    after handle_lookup through engine return, closing the OOM-strand
- *    window (V6-M-1).
+ *    window.
  *  - Exact registered-length bounds and controller affinity are checked
- *    under g_driver.lock before the first cursor.next() (sections 5.1/5.3).
+ *    under g_driver.lock before the first cursor.next().
  */
 
 #include "ugds_internal.h"
@@ -42,7 +47,7 @@
 #endif
 
 /* ========================================================================
- * SglRefOwner implementation (section 2)
+ * SglRefOwner implementation
  * ======================================================================== */
 
 SglRefOwner::SglRefOwner(SglRefOwner&& other) noexcept
@@ -103,8 +108,8 @@ int SglRefOwner::acquire(const uGDSIoSegment_t* segs, uint32_t nr,
 
         DriverState::BufEntry& entry = it->second;
 
-        /* INV-AFFINITY (C2, section 5.3): mapping controller must match
-         * the submitting handle's controller. */
+        /* Controller affinity check: mapping controller must match the
+         * submitting handle's controller. */
         if (entry.map_ctrl != hs_ctrl) {
             for (uint32_t j = 0; j < k; ++j)
                 g_driver.buf_registry.find(bases_[j])->second.in_flight
@@ -112,9 +117,9 @@ int SglRefOwner::acquire(const uGDSIoSegment_t* segs, uint32_t nr,
             return -EINVAL;
         }
 
-        /* INV-LEN (C1, section 5.1): exact-length bounds, subtraction form.
-         * offset and size were already value-checked MPS/block-aligned by the
-         * caller; here we enforce the registered-range bound. */
+        /* Exact-length bounds, subtraction form.  offset and size were
+         * already value-checked MPS/block-aligned by the caller; here we
+         * enforce the registered-range bound. */
         const uint64_t off = static_cast<uint64_t>(segs[k].offset);
         const uint64_t sz  = static_cast<uint64_t>(segs[k].size);
         if (off > entry.length || sz > entry.length - off) {
@@ -143,7 +148,7 @@ int SglRefOwner::acquire(const uGDSIoSegment_t* segs, uint32_t nr,
     return 0;
 }
 
-/* Identity-only acquire for the async path (section 6.3): skips INV-LEN
+/* Identity-only acquire for the async path: skips the exact-length bound
  * because offset/size are late-bound and not yet observable at enqueue.
  * Fills only dma/base/registered_length/backend in seg_views_out; geometry
  * is completed by the callback. */
@@ -165,7 +170,7 @@ int SglRefOwner::acquire_identity_only(const uGDSIoSegment_t* segs, uint32_t nr,
 
         DriverState::BufEntry& entry = it->second;
 
-        /* INV-AFFINITY (C2, section 5.3). */
+        /* Controller affinity check. */
         if (entry.map_ctrl != hs_ctrl) {
             for (uint32_t j = 0; j < k; ++j)
                 g_driver.buf_registry.find(bases_[j])->second.in_flight
@@ -194,7 +199,7 @@ int SglRefOwner::acquire_identity_only(const uGDSIoSegment_t* segs, uint32_t nr,
 }
 
 /* ========================================================================
- * SglWindowCursor (section 4.2)
+ * SglWindowCursor
  * ======================================================================== */
 
 /* Compute SU = lcm(MPS, block_size).  Both are powers of two (MPS = 2^(12+n),
@@ -217,7 +222,7 @@ static size_t compute_split_unit(size_t mps, size_t block_size) noexcept
 /* Initialize a cursor for a resolved SegView array.  Returns false
  * (reject) if window_cap, page_size, block_size, or nr_segs is zero.
  * The cursor holds no storage of its own; 'segs' must outlive the
- * cursor walk.  See SGL design v7 section 4.2. */
+ * cursor walk. */
 bool sgl_cursor_init(SglWindowCursor& c, const SegView* segs, uint32_t nr_segs,
                      size_t window_cap, size_t page_size, size_t block_size)
 {
@@ -235,8 +240,8 @@ bool sgl_cursor_init(SglWindowCursor& c, const SegView* segs, uint32_t nr_segs,
 }
 
 /* Emit at most one window into out.  Returns true if a window was produced,
- * false when the SGL is exhausted.  Implements the R1/R2/R3 rules of
- * section 4.2 without materializing a window array. */
+ * false when the SGL is exhausted.  Implements the capacity / PRP-tail /
+ * end-of-SGL rules without materializing a window array. */
 bool sgl_cursor_next(SglWindowCursor& c, CmdWindow& out) noexcept
 {
     if (c.seg_idx >= c.nr_segs)
@@ -253,7 +258,7 @@ bool sgl_cursor_next(SglWindowCursor& c, CmdWindow& out) noexcept
         size_t rem  = seg.size - c.bytes_in_seg;
         size_t take = std::min(rem, c.window_cap - out.bytes);
 
-        /* R1 (capacity): if this take splits mid-segment, round down to an
+        /* Capacity rule: if this take splits mid-segment, round down to an
          * SU boundary so the continuation starts page-aligned. */
         if (take < rem) {
             take = (take / c.split_unit) * c.split_unit;
@@ -270,27 +275,27 @@ bool sgl_cursor_next(SglWindowCursor& c, CmdWindow& out) noexcept
 
         bool segment_ended = (c.bytes_in_seg == seg.size);
         if (segment_ended) {
-            /* R2 (PRP tail): a segment whose size is not page-multiple must
-             * be the window's last slice. */
+            /* PRP tail rule: a segment whose size is not page-multiple
+             * must be the window's last slice. */
             bool non_page_tail = (seg.size % c.page_size != 0);
             c.seg_idx++;
             c.bytes_in_seg = 0;
             if (non_page_tail) {
-                return true;  /* R2 */
+                return true;  /* PRP tail */
             }
         }
 
-        /* R1 (capacity) */
+        /* Capacity rule */
         if (out.bytes >= c.window_cap)
             return true;
     }
 
-    /* R3 (end of SGL): return whatever was accumulated. */
+    /* End of SGL: return whatever was accumulated. */
     return true;
 }
 
 /* ========================================================================
- * sgl_count_windows_analytic (section 4.2)
+ * sgl_count_windows_analytic
  * O(nr_segs) exact count via room/cap arithmetic.
  * ======================================================================== */
 
@@ -303,10 +308,11 @@ bool sgl_count_windows_analytic(const uGDSIoSegment_t* segs,
     if (window_cap == 0 || page_size == 0 || block_size == 0 || nr_segs == 0)
         return false;
 
-    /* SU is used by the cursor to round R1 split points; the analytic
-     * counter uses quotient/remainder against window_cap, which the caller
-     * already guaranteed is an SU multiple (so full windows need no
-     * rounding).  We keep SU here only as a debug sanity reference. */
+    /* SU is used by the cursor to round capacity-rule split points; the
+     * analytic counter uses quotient/remainder against window_cap, which
+     * the caller already guaranteed is an SU multiple (so full windows
+     * need no rounding).  We keep SU here only as a debug sanity
+     * reference. */
     const size_t SU = compute_split_unit(page_size, block_size);
     (void)SU;
 
@@ -324,12 +330,13 @@ bool sgl_count_windows_analytic(const uGDSIoSegment_t* segs,
                 s = 0;
             } else {
                 /* s >= room: the open window fills to capacity.
-                 * But we must respect R1 mid-segment rounding: the actual
-                 * take is round_down(room, SU).  Since window contents
-                 * before a split are SU-multiples and window_cap is an SU
-                 * multiple, room itself is an SU multiple when open is an
-                 * SU multiple (which it is by induction).  So take == room
-                 * exactly, no rounding loss. */
+                 * But we must respect the capacity-rule mid-segment
+                 * rounding: the actual take is round_down(room, SU).
+                 * Since window contents before a split are SU-multiples
+                 * and window_cap is an SU multiple, room itself is an SU
+                 * multiple when open is an SU multiple (which it is by
+                 * induction).  So take == room exactly, no rounding
+                 * loss. */
                 s -= room;
                 count++;
                 open = 0;
@@ -337,13 +344,13 @@ bool sgl_count_windows_analytic(const uGDSIoSegment_t* segs,
         }
 
         if (s != 0) {
-            /* All full R1 windows at once.  Each full window takes
-             * window_cap bytes (an SU multiple), so no rounding. */
+            /* All full capacity-rule windows at once.  Each full window
+             * takes window_cap bytes (an SU multiple), so no rounding. */
             count += s / window_cap;
             open = s % window_cap;
         }
 
-        /* R2: if this segment's size is not page-multiple, it closes the
+        /* PRP tail rule: if this segment's size is not page-multiple, it closes the
          * window. */
         if (segs[i].size % page_size != 0) {
             /* open must be nonzero here: the segment just contributed
@@ -356,7 +363,7 @@ bool sgl_count_windows_analytic(const uGDSIoSegment_t* segs,
         }
     }
 
-    /* R3: trailing open window */
+    /* End of SGL: trailing open window */
     if (open != 0) count++;
 
     if (count > UINT32_MAX)
@@ -367,13 +374,12 @@ bool sgl_count_windows_analytic(const uGDSIoSegment_t* segs,
 }
 
 /* ========================================================================
- * SglPageCursor (section 3.2)
+ * SglPageCursor
  * ======================================================================== */
 
 /* Initialize a page cursor for one CmdWindow.  The caller then calls
  * sgl_page_cursor_next() exactly CmdWindow::n_pages times to walk the
- * MPS-granular bus addresses across segment boundaries.  See SGL
- * design v7 section 3.2. */
+ * MPS-granular bus addresses across segment boundaries. */
 void sgl_page_cursor_init(SglPageCursor& c, const SegView* segs,
                           uint32_t first_seg, size_t first_seg_page_off,
                           uint32_t n_segs, size_t n_pages) noexcept
@@ -393,7 +399,7 @@ void sgl_page_cursor_init(SglPageCursor& c, const SegView* segs,
      *    full remainder).
      *
      * Since the caller will call next() exactly n_pages times total, and
-     * each segment boundary is page-aligned (INV-ALIGN + R1/R2 rules), we
+     * each segment boundary is page-aligned (alignment + cursor rules), we
      * can lazily compute slice pages as: for a given segment, the slice
      * runs from page_in_seg to min(seg_end_page, page_in_seg + remaining).
      * We track pages_remaining_total and cap each segment's contribution. */
@@ -413,8 +419,8 @@ uint64_t sgl_page_cursor_next(SglPageCursor& c) noexcept
         const SegView& seg = c.segs[c.abs_seg];
         /* The slice for this segment runs from page_in_seg up to either the
          * segment's page boundary or slice_pages_left exhaustion.  Since all
-         * slices except possibly the last are page-multiple (INV-ALIGN +
-         * R1/R2 rules), and the last slice is capped by slice_pages_left,
+         * slices except possibly the last are page-multiple (alignment +
+         * cursor rules), and the last slice is capped by slice_pages_left,
          * this walk is correct. */
         size_t seg_end_page = seg.page_start +
             (seg.size + seg.dma->page_size - 1) / seg.dma->page_size;
@@ -434,7 +440,7 @@ uint64_t sgl_page_cursor_next(SglPageCursor& c) noexcept
 }
 
 /* ========================================================================
- * do_iov_engine (section 6.1)
+ * do_iov_engine
  * Shared streaming windowed IO engine.
  * ======================================================================== */
 
@@ -500,7 +506,7 @@ IovEngineResult do_iov_engine(HandleState* hs, SegView* segs, uint32_t nr_segs,
                 nvm_cpl_t* drain = wait_for_completion(hs, qp);
                 if (drain == nullptr) {
                     /* Timeout during drain.  Park resources immediately
-                     * while qp.lock is held (section 6.4, F7 fix). */
+                     * while qp.lock is held. */
                     result.ret = -EIO;
                     result.timed_out = true;
                     hs->wedged.store(true, std::memory_order_release);
@@ -526,7 +532,7 @@ IovEngineResult do_iov_engine(HandleState* hs, SegView* segs, uint32_t nr_segs,
             uint16_t cid = NVM_DEFAULT_CID(&qp.sq);
             nvm_cmd_header(cmd, cid, opcode, hs->ns_id);
 
-            /* Build PRP using SglPageCursor (section 3.3). */
+            /* Build PRP using SglPageCursor. */
             SglPageCursor pc;
             sgl_page_cursor_init(pc, segs, window.first_seg,
                                  window.first_seg_page_off,
@@ -592,38 +598,38 @@ IovEngineResult do_iov_engine(HandleState* hs, SegView* segs, uint32_t nr_segs,
 }
 
 /* ========================================================================
- * uGDSReadv / uGDSWritev (sections 1.2, 6.1, 8.1)
+ * uGDSReadv / uGDSWritev
  * ======================================================================== */
 
 /* Common validation + engine dispatch for vectored read/write.
  *
  * Performs, in order:
  *   1. Malformed-call checks (null segs, nr_segs == 0, nr_segs >
- *      UGDS_IOV_MAX) per the 8.1 value matrix.
- *   2. handle_lookup + HandleOpGuard (V6-M-1) so every early return
- *      releases the handle-operation reference exactly once.
+ *      UGDS_IOV_MAX) per the value matrix.
+ *   2. handle_lookup + HandleOpGuard so every early return releases
+ *      the handle-operation reference exactly once.
  *   3. Per-segment value validation (base/size nonzero, offset >= 0,
  *      offset MPS-aligned, size block-multiple, overflow-safe total).
  *   4. file_offset alignment and window_cap == 0 rejection.
  *   5. SglRefOwner::acquire under g_driver.lock (registration +
- *      INV-AFFINITY + INV-LEN, all-or-nothing).
+ *      controller affinity + exact-length bound, all-or-nothing).
  *   6. do_iov_engine dispatch.
  *   7. owner.release() (no-op if the engine parked it on timeout) and
  *      handle_guard.release().
  *
  * 'opcode' is NVM_IO_READ or NVM_IO_WRITE.  Returns total bytes or
- * -errno.  See SGL design v7 sections 1.2, 6.1, 8.1. */
+ * -errno. */
 static ssize_t do_readv_writev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
                                unsigned nr_segs, off_t file_offset,
                                uint8_t opcode)
 {
-    /* --- Malformed-call checks (8.1 value rows) --- */
+    /* --- Malformed-call checks --- */
     if (segs == nullptr || nr_segs == 0)
         return -EINVAL;
     if (nr_segs > UGDS_IOV_MAX)
         return -EINVAL;
 
-    /* handle_lookup + HandleOpGuard (V6-M-1) */
+    /* handle_lookup + HandleOpGuard */
     std::shared_ptr<HandleState> hs_sp;
     HandleState* hs = handle_lookup(fh, &hs_sp);
     if (!hs)
@@ -637,7 +643,7 @@ static ssize_t do_readv_writev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
         return -EINVAL;
     }
 
-    /* --- Per-segment value validation (8.1 value rows) --- */
+    /* --- Per-segment value validation --- */
     uint64_t total_size = 0;
     for (unsigned i = 0; i < nr_segs; ++i) {
         if (segs[i].base == nullptr || segs[i].size == 0)
@@ -661,7 +667,7 @@ static ssize_t do_readv_writev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
         (static_cast<size_t>(file_offset) % block_size) != 0)
         return -EINVAL;
 
-    /* window_cap == 0 check (block > max_xfer, section 4.1). */
+    /* window_cap == 0 check (block > max_xfer). */
     const size_t prp_capacity = page_size / sizeof(uint64_t);
     size_t max_xfer = hs->max_transfer_size;
     if (max_xfer == 0) max_xfer = UGDS_DEFAULT_MAX_TRANSFER_SIZE;
@@ -675,7 +681,7 @@ static ssize_t do_readv_writev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
 
     /* --- SegView storage: stack for nr <= 4, heap otherwise --- */
     /* HandleOpGuard protects the handle reference across this allocation,
-     * so a bad_alloc here cannot strand handle_in_flight (V6-M-1). */
+     * so a bad_alloc here cannot strand handle_in_flight. */
     SegView stack_views[4];
     std::vector<SegView> heap_views;
     SegView* views = nullptr;
@@ -741,4 +747,4 @@ extern "C" ssize_t uGDSWritev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
 }
 
 /* The async vectored entry points (uGDSReadvAsync / uGDSWritevAsync) are
- * implemented in ugds_async.cpp (Phase 3, SGL design section 6.3). */
+ * implemented in ugds_async.cpp. */

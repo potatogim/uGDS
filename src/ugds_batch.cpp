@@ -28,7 +28,7 @@ static void async_release_inflight_batch(void* devPtr_base)
 
 /* Append an entry index to the deferred-release scratch.
  * Must be called under bs->lock; the actual registry decrement is
- * deferred until after qp.lock is released (R2 MINOR-1). */
+ * deferred until after qp.lock is released. */
 static inline void queue_entry_release(BatchState* bs, unsigned idx)
 {
     BatchIOEntry& entry = bs->entries[idx];
@@ -40,7 +40,7 @@ static inline void queue_entry_release(BatchState* bs, unsigned idx)
 }
 
 /* Release the in-flight reference(s) held by a batch entry.
- * C1 (review codex-sgl-impl-p2-r1): kind-aware release.
+ * Kind-aware release.
  * - BATCH_ENTRY_PLAIN: one ref at entry.devPtr_base (legacy path).
  * - BATCH_ENTRY_VECTORED: one ref per base in
  *   bs->seg_arena[entry.seg_begin .. seg_begin + seg_count).
@@ -72,9 +72,9 @@ void release_entry_refs(BatchState* bs, BatchIOEntry& entry)
 
 /* Drain all pending deferred releases in one pass.
  * Must be called under bs->lock but NOT under qp.lock and NOT under
- * g_driver.lock (M1 fix: the old version called
- * async_release_inflight_batch which re-locked g_driver.lock, causing
- * a deadlock on a non-recursive mutex). */
+ * g_driver.lock (the old version called async_release_inflight_batch
+ * which re-locked g_driver.lock, causing a deadlock on a non-recursive
+ * mutex). */
 static void drain_release_scratch(BatchState* bs)
 {
     if (bs->n_release_pending == 0) return;
@@ -82,13 +82,13 @@ static void drain_release_scratch(BatchState* bs)
         uint32_t idx = bs->release_scratch[i];
         BatchIOEntry& entry = bs->entries[idx];
         if (!entry.refs_held) continue;  /* already released */
-        /* C1: release_entry_refs handles both PLAIN and VECTORED. */
+        /* release_entry_refs handles both PLAIN and VECTORED. */
         release_entry_refs(bs, entry);
     }
     bs->n_release_pending = 0;
 }
 
-/* Abort a Phase-3 entry that is WAITING or PENDING (not yet terminal).
+/* Abort an entry that is WAITING or PENDING (not yet terminal).
  *
  * Truncates n_cmds to the submitted prefix (n_cmds_submitted), records
  * -ECANCELED, and queues the entry for deferred release if all its
@@ -194,9 +194,9 @@ static bool drain_one_completion(IOQueuePair& qp, BatchState* bs)
         }
         entry.error_code = entry.bytes_done;
         bs->n_completed++;
-        /* Queue deferred release of in-flight reference (R2 MINOR-1):
+        /* Queue deferred release of in-flight reference:
          * the actual registry decrement runs after qp.lock drops via
-         * drain_release_scratch, restoring the stated lock order (8.3). */
+         * drain_release_scratch, restoring the stated lock order. */
         queue_entry_release(bs, slot.io_idx);
     }
 
@@ -230,7 +230,7 @@ extern "C" uGDSError_t uGDSBatchIOSetUp(uGDSBatchHandle_t* batch,
     /* --- Setup gate: one g_driver.lock critical section ---
      * The closing check, batch_active claim, and batch_setting_up
      * publication are indivisible with respect to force teardown's
-     * closing claim, which runs under the same lock (R3 CRITICAL-2). */
+     * closing claim, which runs under the same lock. */
     std::shared_ptr<HandleState> hs_sp;
     HandleState* hs = nullptr;
     {
@@ -257,7 +257,7 @@ extern "C" uGDSError_t uGDSBatchIOSetUp(uGDSBatchHandle_t* batch,
         hs->batch_setting_up.store(true, std::memory_order_release);
     }
 
-    /* M3: BatchSetupTxn - RAII scope guard that owns ALL five items by value.
+    /* BatchSetupTxn - RAII scope guard that owns ALL five items by value.
      * Pool resources are owned by value (not pointer to bs_sp members)
      * so destruction order does not cause dangling dereferences.
      * On commit, pool resources are transferred to bs_sp->prp_pool
@@ -291,8 +291,8 @@ extern "C" uGDSError_t uGDSBatchIOSetUp(uGDSBatchHandle_t* batch,
     bs_sp->hs_sp = std::move(hs_sp);  /* keep handle alive for batch lifetime */
     bs_sp->entries.resize(nr);
     bs_sp->cmd_map.resize(hs->batch_queue_depth);
-    /* R3 MAJOR-1: release_scratch is sized from capacity (the immutable
-     * SetUp bound), NOT n_entries (the current round's consumed count). */
+    /* release_scratch is sized from capacity (the immutable SetUp
+     * bound), NOT n_entries (the current round's consumed count). */
     bs_sp->release_scratch.resize(nr);
 
     const size_t page_size = hs->ctrl->page_size;
@@ -395,7 +395,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
         bs->n_entries = 0;
         bs->n_completed = 0;
         bs->n_events_read = 0;
-        /* Reset the segment arena allocation point (design 6.2).
+        /* Reset the segment arena allocation point.
          * seg_arena.size()/capacity are never touched here; only the
          * allocation cursor resets so the next Submitv rewrites from
          * index 0.  Plain-only batches never resized the arena and
@@ -404,12 +404,11 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
         bs->arena_used = 0;
     }
 
-    /* C2 (review R1): overflow-safe capacity check.  The old
-     * n_entries + nr > capacity used unsigned addition that wraps for
-     * large nr.  Reject nr > capacity outright, then check the
-     * post-recycle base.  At this point n_entries is already recycled
-     * if the round was fully consumed, so n_entries is the effective
-     * base. */
+    /* Overflow-safe capacity check.  The old n_entries + nr >
+     * capacity used unsigned addition that wraps for large nr.
+     * Reject nr > capacity outright, then check the post-recycle
+     * base.  At this point n_entries is already recycled if the
+     * round was fully consumed, so n_entries is the effective base. */
     if (nr > bs->capacity ||
         bs->n_entries > bs->capacity - nr)
         return make_error(UGDS_BATCH_CAPACITY_EXCEEDED);
@@ -421,7 +420,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
 
     (void)flags;
 
-    // Phase 1: validate and populate entries
+    // Validate and populate entries
     unsigned base = bs->n_entries;
     for (unsigned i = 0; i < nr; ++i) {
         const uGDSIOParams_t& p = iocb[i];
@@ -467,7 +466,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
         entry.n_cmds = static_cast<uint16_t>(n_cmds);
     }
 
-    // Phase 2: build sub-command list
+    // Build sub-command list
     struct SubCmd {
         unsigned io_idx;
         uint64_t lba;
@@ -492,11 +491,11 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
             std::lock_guard<std::mutex> drv_lock(g_driver.lock);
             auto it = g_driver.buf_registry.find(entry.devPtr_base);
             if (it != g_driver.buf_registry.end()) {
-                /* INV-AFFINITY (C2 / design 5.3). */
+                /* Controller affinity check. */
                 if (it->second.map_ctrl != hs->ctrl) {
                     buf_dma = nullptr;
                 }
-                /* INV-LEN (C1 / design 5.1): exact-length bounds. */
+                /* Exact-length bounds. */
                 else {
                     const uint64_t off =
                         static_cast<uint64_t>(entry.devPtr_offset);
@@ -513,7 +512,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
                  * or destroy finishes. Prevents Deregister from unmapping
                  * while batch commands retain PRPs from this buffer. */
                 it->second.in_flight.fetch_add(1, std::memory_order_acq_rel);
-                /* M1: mark that this entry holds a deferred in-flight ref. */
+                /* Mark that this entry holds a deferred in-flight ref. */
                 entry.refs_held = true;
             }
         }
@@ -524,7 +523,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
             entry.n_cmds = 0;
             entry.n_cmds_done = 0;
             bs->n_completed++;
-            /* M1: use deferred release so refs_held is consistent. */
+            /* Use deferred release so refs_held is consistent. */
             queue_entry_release(bs, idx);
             continue;
         }
@@ -540,7 +539,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
         }
         buf_page_start = static_cast<size_t>(entry.devPtr_offset) / page_size;
 
-        /* Defensive page-count bounds check (subsumed by INV-LEN). */
+        /* Defensive page-count bounds check (subsumed by exact-length check). */
         size_t batch_pages_needed = (entry.size - 1) / page_size + 1;
         if (batch_pages_needed > buf_dma->n_ioaddrs ||
             buf_page_start > buf_dma->n_ioaddrs - batch_pages_needed) {
@@ -571,7 +570,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
         }
     }
 
-    // Phase 3: enqueue all NVMe commands to the single batch QP
+    // Enqueue all NVMe commands to the single batch QP
     {
         std::lock_guard<std::mutex> qp_lock(qp.lock);
 
@@ -591,7 +590,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
                     while ((pidx = prp_pool_alloc(&bs->prp_pool)) < 0) {
                         if (!drain_one_completion(qp, bs)) {
                             if (++spins > max_spins) {
-                                /* M2: abort current and later entries via
+                                /* Abort current and later entries via
                                  * the common helper. WAITING + PENDING
                                  * are both handled. Ring the SQ doorbell
                                  * for the accepted prefix. */
@@ -627,7 +626,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
                     } else if (++spins > max_spins) {
                         if (prp_idx != UINT16_MAX)
                             prp_pool_free(&bs->prp_pool, prp_idx);
-                        /* M2: abort current and later entries. */
+                        /* Abort current and later entries. */
                         nvm_sq_submit(&qp.sq);
                         std::atomic_thread_fence(std::memory_order_seq_cst);
                         for (unsigned i = sc.io_idx; i < base + nr; ++i) {
@@ -646,7 +645,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
                 if (cmd == nullptr) {
                     if (prp_idx != UINT16_MAX)
                         prp_pool_free(&bs->prp_pool, prp_idx);
-                    /* M2: abort current and later entries. */
+                    /* Abort current and later entries. */
                     nvm_sq_submit(&qp.sq);
                     std::atomic_thread_fence(std::memory_order_seq_cst);
                     for (unsigned i = sc.io_idx; i < base + nr; ++i) {
@@ -688,10 +687,10 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
             cs.active = true;
             bs->in_flight++;
 
-            /* M2: commit the slot map first, then increment
+            /* Commit the slot map first, then increment
              * n_cmds_submitted, then transition WAITING->PENDING.
-             * C4 (review R1): only WAITING -> PENDING is allowed; do
-             * not overwrite a latched FAILED state from an earlier
+             * Only WAITING -> PENDING is allowed; do not overwrite a
+             * latched FAILED state from an earlier
              * drain_one_completion during backpressure. */
             entry.n_cmds_submitted++;
             if (entry.status == UGDS_BATCH_WAITING)
@@ -704,15 +703,15 @@ extern "C" uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
 
-    /* M1: drain deferred releases after qp.lock is released. */
+    /* Drain deferred releases after qp.lock is released. */
     drain_release_scratch(bs);
 
     bs->n_entries += nr;
     return UGDS_OK;
 
 phase3_abort_return:
-    /* M1/M2: drain deferred releases after qp.lock is released.
-     * The abort helper queued WAITING/PENDING entries for release. */
+    /* Drain deferred releases after qp.lock is released.  The abort
+     * helper queued WAITING/PENDING entries for release. */
     drain_release_scratch(bs);
     return make_error(UGDS_INTERNAL_ERROR);
     } catch (const std::bad_alloc&) {
@@ -760,7 +759,7 @@ extern "C" uGDSError_t uGDSBatchIOGetStatus(uGDSBatchHandle_t batch,
             while (drain_one_completion(qp, bs)) {}
         }
 
-        /* M1: drain deferred releases after qp.lock is released. */
+        /* Drain deferred releases after qp.lock is released. */
         drain_release_scratch(bs);
 
         for (unsigned i = 0; i < bs->n_entries && n_ready < max_events; ++i) {
@@ -806,10 +805,10 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
     BatchState* bs = static_cast<BatchState*>(batch);
     HandleState* hs = bs->hs;
 
-    /* Pin rule (design 6.5, C1): declare pins BEFORE the lock guard so
-     * they outlive it. C++ destroys locals in reverse construction
-     * order: the guard unlocks before the pins drop. This prevents
-     * ~BatchState from running while the mutex is still locked. */
+    /* Pin rule: declare pins BEFORE the lock guard so they outlive
+     * it. C++ destroys locals in reverse construction order: the
+     * guard unlocks before the pins drop. This prevents ~BatchState
+     * from running while the mutex is still locked. */
     std::shared_ptr<BatchState> last_pin;
     std::shared_ptr<BatchState> link_pin;
 
@@ -856,7 +855,7 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
 
         /* --- Resource release (allocation-free) --- */
 
-        /* Drain any live release_scratch prefix first (M1). */
+        /* Drain any live release_scratch prefix first. */
         drain_release_scratch(bs);
 
         /* Scan for remaining refs_held entries and queue them. */
@@ -872,7 +871,7 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
         cleanup_prp_pool(bs);
         bs->lifecycle = BATCH_LIFECYCLE_TORN_DOWN;
 
-        /* --- Link transaction (design 6.5): one g_driver.lock section --- */
+        /* --- Link transaction: one g_driver.lock section --- */
         {
             std::lock_guard<std::mutex> g(g_driver.lock);
             if (hs->active_batch.get() == bs) {
@@ -904,19 +903,19 @@ extern "C" void uGDSBatchIODestroy(uGDSBatchHandle_t batch)
 }
 
 /* ======================================================================== */
-/* uGDSBatchIOSubmitv: vectored batch submit (design 6.2)                  */
+/* uGDSBatchIOSubmitv: vectored batch submit                              */
 /* ======================================================================== */
 
 /* Registry preflight result: a stack record filled under g_driver.lock
- * without taking refs.  classifies each entry so Phase 1 can size the
- * work array before any ref acquisition or allocation. */
+ * without taking refs.  Classifies each entry so the caller can size
+ * the work array before any ref acquisition or allocation. */
 struct PreflightResult {
     bool        valid;
 };
 
-/* Phase 1 helper: pure value validation for one vectored entry.
- * Performs the 8.1 value-matrix checks and computes the analytic
- * window count via sgl_count_windows_analytic.  Writes nothing to bs.
+/* Pure value validation for one vectored entry.
+ * Performs the value-matrix checks and computes the analytic window
+ * count via sgl_count_windows_analytic.  Writes nothing to bs.
  * Returns true on success (out_n_cmds set), false on value error. */
 static bool submitv_validate_entry(const uGDSIOSegParams_t& p,
                                    size_t page_size, size_t block_size,
@@ -963,8 +962,8 @@ static bool submitv_validate_entry(const uGDSIOSegParams_t& p,
     if (n_cmds == 0)
         return false;
 
-    /* C3 (review R1): BatchIOEntry::n_cmds is uint16_t.  Reject counts
-     * that would truncate before any allocation or commit-copy. */
+    /* BatchIOEntry::n_cmds is uint16_t.  Reject counts that would
+     * truncate before any allocation or commit-copy. */
     if (n_cmds > UINT16_MAX)
         return false;
 
@@ -979,7 +978,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
 {
     try {
     /* ==================================================================
-     * Phase 0: basic call/batch checks (no state mutation)
+     * Basic call/batch checks (no state mutation)
      * ================================================================== */
     if (batch == nullptr || iocb == nullptr || nr == 0)
         return make_error(UGDS_INVALID_VALUE);
@@ -994,15 +993,14 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
     if (bs->lifecycle != BATCH_LIFECYCLE_ACTIVE)
         return make_error(UGDS_INVALID_VALUE);
 
-    /* C2+M1 (review R1): overflow-safe capacity check with an effective
-     * base that accounts for a fully consumed recyclable round, WITHOUT
-     * mutating any state.  The old code computed n_entries + nr using
-     * unsigned addition (wraps for large nr) and ran recycle before this
-     * check, so a full-capacity batch rejected any new submit and a
-     * later Phase-1 value error violated consume-none.  We compute the
-     * effective base here and defer the actual recycle reset to the
-     * commit step after all validation, preflight, and allocation
-     * succeed. */
+    /* Overflow-safe capacity check with an effective base that accounts
+     * for a fully consumed recyclable round, WITHOUT mutating any
+     * state.  The old code computed n_entries + nr using unsigned
+     * addition (wraps for large nr) and ran recycle before this check,
+     * so a full-capacity batch rejected any new submit and a later
+     * value error violated consume-none.  We compute the effective base
+     * here and defer the actual recycle reset to the commit step after
+     * all validation, preflight, and allocation succeed. */
     unsigned effective_base = bs->n_entries;
     if (effective_base > 0 && bs->n_events_read == effective_base)
         effective_base = 0;  /* round is fully consumed; would recycle */
@@ -1034,11 +1032,11 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
         return make_error(UGDS_INVALID_VALUE);
 
     /* ==================================================================
-     * Phase 1: validate -> preflight -> allocate -> commit-copy
+     * Validate -> preflight -> allocate -> commit-copy
      * ================================================================== */
 
     /* --- Step 1: Pure value validation (all entries, no state write) --- */
-    /* M1: use effective_base, which accounts for a recyclable round
+    /* Use effective_base, which accounts for a recyclable round
      * without mutating bs state.  The actual recycle reset is applied
      * as part of the infallible commit (Step 4) after all validation,
      * preflight, and allocation succeed. */
@@ -1081,9 +1079,9 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
                     break;
                 }
                 DriverState::BufEntry& be = it->second;
-                /* INV-AFFINITY */
+                /* Controller affinity check */
                 if (be.map_ctrl != hs->ctrl) { ok = false; break; }
-                /* INV-LEN (exact-length bounds) */
+                /* Exact-length bounds */
                 const uint64_t off = static_cast<uint64_t>(p.segs[k].offset);
                 const uint64_t sz  = static_cast<uint64_t>(p.segs[k].size);
                 if (off > be.length || sz > be.length - off) {
@@ -1118,16 +1116,16 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
     /* --- Step 4: Commit-copy (infallible) ---
      * From here, no allocation or throw is possible.  Capture the
      * watermark for rollback safety; populate entries and arena.
-     * The watermark is the 8.4 rollback anchor: it is never restored
-     * in this path because no operation after this point can fail, but
-     * it documents the invariant and serves as the audit point for the
+     * The watermark is the rollback anchor: it is never restored in
+     * this path because no operation after this point can fail, but it
+     * documents the invariant and serves as the audit point for the
      * fixed-size arena model.
      *
-     * M1 (review R1): apply the recycle reset here as the first
-     * infallible commit action.  effective_base was 0 iff the current
-     * round was fully consumed.  This is the consume-none guarantee:
-     * a Phase-1 value error returns without touching n_entries,
-     * n_completed, n_events_read, or arena_used. */
+     * Apply the recycle reset here as the first infallible commit
+     * action.  effective_base was 0 iff the current round was fully
+     * consumed.  This is the consume-none guarantee: a value error
+     * returns without touching n_entries, n_completed, n_events_read,
+     * or arena_used. */
     if (effective_base == 0 && bs->n_entries > 0) {
         bs->n_entries = 0;
         bs->n_completed = 0;
@@ -1185,7 +1183,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
     }
 
     /* ==================================================================
-     * Phase 2: acquiring resolve / build
+     * Acquiring resolve / build
      * ==================================================================
      * For each preflight-valid entry, acquire refs (all-or-nothing per
      * entry via SglRefOwner), resolve SegView geometry into the arena,
@@ -1219,10 +1217,10 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
         }
 
         /* refs are now held by the batch (the in_flight counter was
-         * incremented by acquire).  C1 (review R1): transfer ownership
-         * to the batch by disarming the local owner so its destructor
-         * does not release.  drain_release_scratch will decrement each
-         * base in entry's arena range, selected by entry.kind. */
+         * incremented by acquire).  Transfer ownership to the batch by
+         * disarming the local owner so its destructor does not release.
+         * drain_release_scratch will decrement each base in entry's
+         * arena range, selected by entry.kind. */
         entry.refs_held = true;
         owner.disarm();
 
@@ -1247,7 +1245,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
     }
 
     /* ==================================================================
-     * Phase 3: enqueue (mirrors the plain submit Phase 3)
+     * Enqueue (mirrors the plain submit)
      * ================================================================== */
     {
         std::lock_guard<std::mutex> qp_lock(qp.lock);
@@ -1337,7 +1335,7 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
             memset(cmd, 0, sizeof(nvm_cmd_t));
             nvm_cmd_header(cmd, slot, entry.opcode, hs->ns_id);
 
-            /* Build PRP via SglPageCursor (section 3.3). */
+            /* Build PRP via SglPageCursor. */
             SglPageCursor pc;
             sgl_page_cursor_init(pc, seg_views,
                                  sc.window.first_seg,
@@ -1375,9 +1373,9 @@ extern "C" uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
             bs->in_flight++;
 
             /* Commit slot map, then n_cmds_submitted, then WAITING->PENDING.
-             * C4 (review R1): only WAITING -> PENDING is allowed; a
-             * latched FAILED from an earlier drain_one_completion
-             * during backpressure must persist. */
+             * Only WAITING -> PENDING is allowed; a latched FAILED from
+             * an earlier drain_one_completion during backpressure must
+             * persist. */
             entry.n_cmds_submitted++;
             if (entry.status == UGDS_BATCH_WAITING)
                 entry.status = UGDS_BATCH_PENDING;
