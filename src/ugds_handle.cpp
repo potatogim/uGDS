@@ -73,7 +73,7 @@ static void cleanup_timeout_resources(HandleState* hs) {
         /* SglRefOwner destructor releases in_flight refs under
          * g_driver.lock; the move left timeout_refs non-empty. */
 
-        /* Legacy scalar registered-buffer ref (M4/F7 fix). */
+        /* Legacy scalar registered-buffer ref parked on timeout. */
         if (timeout_registered_base != nullptr) {
             std::lock_guard<std::mutex> drv_lock(g_driver.lock);
             auto it = g_driver.buf_registry.find(timeout_registered_base);
@@ -527,7 +527,7 @@ extern "C" uGDSError_t uGDSHandleDeregisterEx(uGDSHandle_t fh, int timeout_sec)
         }
     }
 
-    /* Batch release walk (C2 / design 6.5): pin the owning recovery
+    /* Batch release walk: pin the owning recovery link under
      * link under g_driver.lock, release it, then perform lifecycle-
      * sensitive cleanup before destroying QPs/controller.
      * batch_setting_up drain: spin-wait with no locks held until the
@@ -549,8 +549,7 @@ extern "C" uGDSError_t uGDSHandleDeregisterEx(uGDSHandle_t fh, int timeout_sec)
                     (pin->lifecycle == BATCH_LIFECYCLE_WEDGED);
 
                 /* Release all in-flight refs for entries that still
-                 * hold them.  C1 (review codex-sgl-impl-p2-r1): use
-                 * kind-aware release so VECTORED entries decrement
+                 * hold them.  Use kind-aware release so VECTORED entries decrement
                  * every base in their arena range, not the (nullptr)
                  * devPtr_base. */
                 for (unsigned i = 0; i < pin->n_entries; ++i) {
@@ -561,10 +560,10 @@ extern "C" uGDSError_t uGDSHandleDeregisterEx(uGDSHandle_t fh, int timeout_sec)
                 pin->n_release_pending = 0;
 
                 cleanup_prp_pool(pin.get());
-                /* MINOR-1 (review codex-sgl-impl-p2-r1): release arena
-                 * capacity during force teardown so the tombstone state
-                 * retained for an ACTIVE batch does not hold ~768 KiB.
-                 * swap-with-empty releases the allocation immediately. */
+                /* Release arena capacity during force teardown so the
+                 * tombstone state retained for an ACTIVE batch does not
+                 * hold ~768 KiB. swap-with-empty releases the
+                 * allocation immediately. */
                 std::vector<SegView>().swap(pin->seg_arena);
                 pin->arena_used = 0;
                 pin->lifecycle = BATCH_LIFECYCLE_TORN_DOWN;

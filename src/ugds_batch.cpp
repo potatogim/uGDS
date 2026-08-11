@@ -947,7 +947,7 @@ static bool submitv_validate_entry(const uGDSIOSegParams_t& p,
             return false;
 
         uint64_t seg_size = static_cast<uint64_t>(p.segs[k].size);
-        if (total_size > static_cast<uint64_t>(SSIZE_MAX) - seg_size)
+        if (seg_size > static_cast<uint64_t>(SSIZE_MAX) - total_size)
             return false;  /* total overflow */
         total_size += seg_size;
     }

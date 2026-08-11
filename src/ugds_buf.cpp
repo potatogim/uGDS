@@ -10,7 +10,7 @@
  * be called after the mapping is successfully handed off to its owner
  * (e.g. inserted into the registry) so that the destructor does not
  * unmap it.  Used to make registry insertion transactional with respect
- * to bad_alloc (M-5). */
+ * to bad_alloc. */
 class MappedDmaGuard {
     nvm_dma_t* dma_ = nullptr;
     bool       armed_ = false;
@@ -50,7 +50,7 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
             return make_error(UGDS_DRIVER_NOT_INITIALIZED);
         }
 
-        /* INV-ALIGN (C3, design 5.2): the library layer rejects a base
+        /* The library layer rejects a base that is not MPS-aligned,
          * that is not a multiple of the controller MPS. ioaddrs[] entries
          * are MPS-granular, so a non-MPS-aligned base means ioaddrs[0]
          * would not correspond to bufPtr_base. This is the universal PRP
@@ -76,7 +76,7 @@ extern "C" uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, i
         }
 
         /* Guard the mapping so a bad_alloc from registry insertion unmaps it
-         * instead of leaking the device mapping across the C ABI (M-5).
+         * instead of leaking the device mapping across the C ABI.
          * The transactional insert below disarms the guard only after the
          * entry is fully constructed and stored. */
         MappedDmaGuard map_guard(dma);

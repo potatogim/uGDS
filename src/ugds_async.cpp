@@ -711,7 +711,7 @@ static void async_iov_execute(AsyncRequest* req)
             err_ret = -EINVAL; break;
         }
 
-        if (total_size > static_cast<uint64_t>(SSIZE_MAX) - sz) {
+        if (sz > static_cast<uint64_t>(SSIZE_MAX) - total_size) {
             err_ret = -EINVAL; break;
         }
         total_size += sz;

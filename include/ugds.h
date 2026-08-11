@@ -342,8 +342,8 @@ typedef struct uGDSIoSegment {
 #define UGDS_IOV_MAX        1024
 
 /* Maximum number of segments per vectored batch entry.  Bounds the
- * arena allocation at uGDSBatchIOSetUp: capacity * UGDS_BATCH_IOV_MAX
- * SegView slots are reserved once per batch object lifetime. */
+ * arena allocation: capacity * UGDS_BATCH_IOV_MAX SegView slots are
+ * reserved once per batch object lifetime. */
 #define UGDS_BATCH_IOV_MAX  128
 
 /* Vectored read.  Segments are consumed in array order: segs[0] maps
@@ -401,9 +401,10 @@ uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
  *     stream callback (late binding).  The segs array must remain
  *     valid until the callback runs.
  *
- * *bytes_read_p is pre-zeroed at enqueue and written exactly once
- * (either -errno on validation/launch failure, or the callback's
- * result). */
+ * *bytes_read_p is pre-zeroed at enqueue. On validation or launch
+ *     failure the return value remains zero and the error is returned
+ *     via the uGDSError_t return code. On success the callback writes
+ *     the byte count (or -errno on runtime failure) exactly once. */
 uGDSError_t uGDSReadvAsync(uGDSHandle_t fh, uGDSIoSegment_t* segs,
                              unsigned nr_segs, off_t* file_offset_p,
                              ssize_t* bytes_read_p, void* stream);

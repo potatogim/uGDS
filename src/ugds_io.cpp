@@ -109,19 +109,19 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
     bool on_the_fly = false;
     size_t buf_page_start = 0;
     /* owner tracks the registered-buffer in-flight ref so it can be
-     * parked into qp.timeout_refs on timeout (M4 / F7 fix). */
+     * parked into qp.timeout_refs on timeout. */
     bool ref_held = false;
 
     {
         std::lock_guard<std::mutex> drv_lock(g_driver.lock);
         auto it = g_driver.buf_registry.find(bufPtr_base);
         if (it != g_driver.buf_registry.end()) {
-            /* INV-AFFINITY (C2 / design 5.3): mapping controller must
+            /* Controller affinity: mapping controller must
              * match the submitting handle's controller. */
             if (it->second.map_ctrl != hs->ctrl) {
                 return -EINVAL;
             }
-            /* INV-LEN (C1 / design 5.1): exact-length bounds in
+            /* Exact-length bounds in
              * subtraction form. bufPtr_offset was checked >= 0 above. */
             const uint64_t off = static_cast<uint64_t>(bufPtr_offset);
             const uint64_t sz  = static_cast<uint64_t>(size);
@@ -145,7 +145,7 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
             return -EINVAL;
         }
         buf_page_start = static_cast<size_t>(bufPtr_offset) / page_size;
-        /* Defensive page-count check (subsumed by INV-LEN above). */
+        /* Defensive page-count check. */
         size_t pages_needed = (size - 1) / page_size + 1;
         if (pages_needed > buf_dma->n_ioaddrs ||
             buf_page_start > buf_dma->n_ioaddrs - pages_needed) {
@@ -228,7 +228,7 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
                     result = -EIO;
                     /* An older submitted command may still DMA. Treat this
                      * exactly like a post-submit completion timeout.
-                     * Park the resource while qp.lock is held (M4 / F7 fix):
+                     * Park the resource while qp.lock is held:
                      * the post-lock parking block below is bypassed by this
                      * goto, so we must park here. */
                     timed_out = true;
@@ -285,7 +285,7 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
                 timed_out = true;
                 /* Mark wedged while still holding qp.lock to prevent
                  * QP reuse before the flag is visible.
-                 * Park the resource at the timeout site (M4 / F7 fix):
+                 * Park the resource at the timeout site:
                  * the post-lock block below is skipped by this goto. */
                 hs->wedged.store(true, std::memory_order_release);
                 if (on_the_fly) {
@@ -316,7 +316,7 @@ ssize_t do_io_internal(uGDSHandle_t fh, void* bufPtr_base, size_t size,
         result = static_cast<ssize_t>(bytes_done);
 
         /* Parking was already done at each timeout site while qp.lock
-         * was held (M4 / F7 fix). The old post-lock block below was
+         * was held. The old post-lock block below was
          * unreachable on the timeout path due to the goto. */
 
     out:;

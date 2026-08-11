@@ -566,7 +566,7 @@ int nvm_dma_map_device_ex(nvm_dma_t** handle, const nvm_ctrl_t* ctrl, void* devp
              * vaddr & GPU_PAGE_MASK (drv/map.c), so a misaligned
              * base silently addresses the containing 64KiB page and
              * ioaddrs[0] does not correspond to devptr. This is silent
-             * data corruption (C3 / F16). */
+             * data corruption. */
             if ((uintptr_t)devptr % ((size_t)1 << 16) != 0)
             {
                 dprintf("CUDA P2P devptr %p not 64KiB-aligned\n", devptr);

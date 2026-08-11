@@ -655,9 +655,11 @@ static ssize_t do_readv_writev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
         if ((segs[i].size % block_size) != 0)
             return -EINVAL;
 
-        /* Overflow-safe total accumulation. */
+        /* Overflow-safe total accumulation. Guard order matters:
+         * total_size is already known to be <= SSIZE_MAX, so
+         * SSIZE_MAX - total_size cannot underflow. */
         uint64_t seg_size = static_cast<uint64_t>(segs[i].size);
-        if (total_size > static_cast<uint64_t>(SSIZE_MAX) - seg_size)
+        if (seg_size > static_cast<uint64_t>(SSIZE_MAX) - total_size)
             return -EINVAL;  /* total overflow */
         total_size += seg_size;
     }
