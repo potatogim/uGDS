@@ -1,9 +1,19 @@
 /* uGDS SGL (scatter-gather) streaming engine and sync vectored API.
  *
- * Implements the pure streaming primitives (SglPageCursor, SglWindowCursor,
- * analytic counter), the fixed-capacity reference owner (SglRefOwner), the
- * shared windowed IO engine (do_iov_engine), and the public sync vectored
- * entry points (uGDSReadv/uGDSWritev) per SGL design v7 sections 2-6.1.
+ * Public APIs implemented here:
+ *   - uGDSReadv / uGDSWritev       (Phase 1, sync vectored IO)
+ *
+ * Internal primitives implemented here (consumed by ugds_batch.cpp and
+ * ugds_async.cpp):
+ *   - SglRefOwner                  (fixed-capacity in-flight ref owner)
+ *   - SglWindowCursor / SglPageCursor / sgl_count_windows_analytic
+ *   - do_iov_engine                (shared streaming windowed IO engine)
+ *
+ * Implements the pure streaming primitives (SglPageCursor,
+ * SglWindowCursor, analytic counter), the fixed-capacity reference
+ * owner (SglRefOwner), the shared windowed IO engine (do_iov_engine),
+ * and the public sync vectored entry points (uGDSReadv/uGDSWritev) per
+ * SGL design v7 sections 2-6.1.
  *
  * Design constraints honored here:
  *  - SglWindowCursor yields one CmdWindow at a time into caller-local
@@ -204,6 +214,10 @@ static size_t compute_split_unit(size_t mps, size_t block_size) noexcept
     return (mps / a) * block_size;
 }
 
+/* Initialize a cursor for a resolved SegView array.  Returns false
+ * (reject) if window_cap, page_size, block_size, or nr_segs is zero.
+ * The cursor holds no storage of its own; 'segs' must outlive the
+ * cursor walk.  See SGL design v7 section 4.2. */
 bool sgl_cursor_init(SglWindowCursor& c, const SegView* segs, uint32_t nr_segs,
                      size_t window_cap, size_t page_size, size_t block_size)
 {
@@ -356,6 +370,10 @@ bool sgl_count_windows_analytic(const uGDSIoSegment_t* segs,
  * SglPageCursor (section 3.2)
  * ======================================================================== */
 
+/* Initialize a page cursor for one CmdWindow.  The caller then calls
+ * sgl_page_cursor_next() exactly CmdWindow::n_pages times to walk the
+ * MPS-granular bus addresses across segment boundaries.  See SGL
+ * design v7 section 3.2. */
 void sgl_page_cursor_init(SglPageCursor& c, const SegView* segs,
                           uint32_t first_seg, size_t first_seg_page_off,
                           uint32_t n_segs, size_t n_pages) noexcept
@@ -383,6 +401,9 @@ void sgl_page_cursor_init(SglPageCursor& c, const SegView* segs,
     (void)first_seg_page_off;
 }
 
+/* Return the current segment's ioaddr and advance the cursor across
+ * segment boundaries.  Total calls bounded by CmdWindow::n_pages.
+ * Returns 0 only on misuse (caller overran n_pages). */
 uint64_t sgl_page_cursor_next(SglPageCursor& c) noexcept
 {
     /* Walk the segment slices in order, emitting MPS-granular bus addresses.
@@ -575,8 +596,23 @@ IovEngineResult do_iov_engine(HandleState* hs, SegView* segs, uint32_t nr_segs,
  * ======================================================================== */
 
 /* Common validation + engine dispatch for vectored read/write.
- * opcode is NVM_IO_READ or NVM_IO_WRITE.
- * Returns total bytes or -errno. */
+ *
+ * Performs, in order:
+ *   1. Malformed-call checks (null segs, nr_segs == 0, nr_segs >
+ *      UGDS_IOV_MAX) per the 8.1 value matrix.
+ *   2. handle_lookup + HandleOpGuard (V6-M-1) so every early return
+ *      releases the handle-operation reference exactly once.
+ *   3. Per-segment value validation (base/size nonzero, offset >= 0,
+ *      offset MPS-aligned, size block-multiple, overflow-safe total).
+ *   4. file_offset alignment and window_cap == 0 rejection.
+ *   5. SglRefOwner::acquire under g_driver.lock (registration +
+ *      INV-AFFINITY + INV-LEN, all-or-nothing).
+ *   6. do_iov_engine dispatch.
+ *   7. owner.release() (no-op if the engine parked it on timeout) and
+ *      handle_guard.release().
+ *
+ * 'opcode' is NVM_IO_READ or NVM_IO_WRITE.  Returns total bytes or
+ * -errno.  See SGL design v7 sections 1.2, 6.1, 8.1. */
 static ssize_t do_readv_writev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
                                unsigned nr_segs, off_t file_offset,
                                uint8_t opcode)
