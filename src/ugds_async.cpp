@@ -805,10 +805,11 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
     /* Allocate the request and its resolved[] storage BEFORE acquiring
      * any reference, so that allocation failure cannot strand an
      * in_flight or handle_in_flight counter (M-3).  resolved[] uses the
-     * inline slot for nr <= 4. */
-    AsyncRequest* req = new (std::nothrow) AsyncRequest;
-    if (req == nullptr)
-        return make_error(UGDS_OUT_OF_MEMORY);
+     * inline slot for nr <= 4.
+     * MAJOR-3: unique_ptr owns req until successful launch; on any
+     * exception or early return it is automatically freed. */
+    auto req_guard = std::make_unique<AsyncRequest>();
+    AsyncRequest* req = req_guard.get();
     req->fh            = fh;
     req->file_offset_p = file_offset_p;
     req->bytes_done_p  = bytes_done_p;
@@ -819,15 +820,13 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
 
     if (nr_segs <= 4) {
         req->resolved = req->inline_resolved;
-        /* MAJOR-1: resolved_owns_heap stays false (default). */
+        /* resolved_owns_heap stays false (default). */
     } else {
         SegView* heap = new (std::nothrow) SegView[nr_segs];
-        if (heap == nullptr) {
-            delete req;  /* MAJOR-1: ~AsyncRequest frees heap[] if owned */
+        if (heap == nullptr)
             return make_error(UGDS_OUT_OF_MEMORY);
-        }
         req->resolved = heap;
-        req->resolved_owns_heap = true;  /* MAJOR-1: destructor owns it */
+        req->resolved_owns_heap = true;  /* destructor owns it */
     }
 
     /* async_validate_v acquires in-flight refs + handle ref, fills
@@ -838,9 +837,8 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
                                       &req->owner, &req->hs_sp,
                                       &list_backend, &mixed);
     if (st.err != UGDS_SUCCESS) {
-        /* No refs acquired, no handle ref held.  Free the request; the
-         * destructor frees heap resolved[] if any (MAJOR-1). */
-        delete req;
+        /* No refs acquired, no handle ref held. req_guard frees req +
+         * heap resolved[] via destructor. */
         return st;
     }
 
@@ -852,11 +850,8 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
                                                     stream_backend,
                                                     &launch_backend);
     if (lberr.err != UGDS_SUCCESS) {
-        /* Reject at enqueue: release refs + handle ref, then free.
-         * MAJOR-1: destructor frees heap resolved[] if owned. */
-        req->owner.release();  /* idempotent: decrements in_flight */
+        req->owner.release();
         handle_release(req->hs_sp.get());
-        delete req;
         return lberr;
     }
     req->launch_backend = launch_backend;
@@ -866,13 +861,13 @@ static uGDSError_t do_readv_writev_async(uGDSHandle_t fh,
      * acquired and free the request. */
     uGDSError_t lc = iov_launch_host_func(stream, req);
     if (lc.err != UGDS_SUCCESS) {
-        /* MAJOR-1: destructor frees heap resolved[] if owned. */
         req->owner.release();
         handle_release(req->hs_sp.get());
-        delete req;
         return lc;
     }
 
+    /* Launch succeeded: release ownership to the callback. */
+    (void)req_guard.release();
     return UGDS_OK;
 }
 
