@@ -120,12 +120,24 @@ typedef struct uGDSDescr_t {
 
 typedef void* uGDSHandle_t;
 
+/* Open the uGDS driver: discover the NVMe controller and initialize
+ * the global driver state.  Must be called once before any other API.
+ * Returns UGDS_OK or an error if the controller cannot be opened. */
 uGDSError_t uGDSDriverOpen(void);
 
+/* Close the driver and release controller resources.  All handles and
+ * buffers should be deregistered first. */
 uGDSError_t uGDSDriverClose(void);
 
+/* Register a file/Windows handle obtained from the user as a uGDS
+ * handle.  'descr' describes the underlying OS handle type (opaque fd
+ * on Linux, opaque handle on Windows, userspace FS).  The returned
+ * *fh is the opaque handle used by all IO entry points. */
 uGDSError_t uGDSHandleRegister(uGDSHandle_t* fh, uGDSDescr_t* descr);
 
+/* Deregister a handle (non-blocking, equivalent to DeregisterEx with
+ * timeout_sec == -1).  Blocks until all in-flight operations on this
+ * handle have drained. */
 void uGDSHandleDeregister(uGDSHandle_t fh);
 
 /* Deregister a handle with a drain timeout.
@@ -146,6 +158,11 @@ void uGDSHandleDeregister(uGDSHandle_t fh);
  * API may use it. The caller must have already reset the controller. */
 uGDSError_t uGDSHandleDeregisterEx(uGDSHandle_t fh, int timeout_sec);
 
+/* Register a device/host buffer for direct IO.  'bufPtr_base' is the
+ * exact base pointer of the allocation; 'length' is in bytes.  'flags'
+ * may include UGDS_REGISTER_DMABUF to use the AMD HIP/dma-buf path.
+ * The registration creates the dma mapping used by subsequent IO calls;
+ * it must be released by uGDSBufDeregister. */
 uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, int flags);
 
 /* Flag for uGDSBufRegister: use AMD HIP/dma-buf path */
@@ -157,6 +174,9 @@ uGDSError_t uGDSBufRegister(const void* bufPtr_base, size_t length, int flags);
 #define NVM_MAP_RDMA        0x2    /* Retain dmabuf fd for RDMA use */
 #define NVM_MAP_FORCE_CUDA  0x4    /* Force CUDA path (skip auto-probe) */
 
+/* Release a buffer registration previously created by uGDSBufRegister
+ * or uGDSBufRegisterEx.  Blocks until all in-flight IO on this buffer
+ * has drained; returns UGDS_BUSY if the drain cannot complete. */
 uGDSError_t uGDSBufDeregister(const void* bufPtr_base);
 
 /* Backend identifier for dual-backend dispatch. */
@@ -172,6 +192,10 @@ typedef struct uGDSBufConfig {
     bool            enable_export;
 } uGDSBufConfig_t;
 
+/* Register a device/host buffer with an explicit backend selection
+ * (CUDA or HIP) and optional dma-buf export flag.  In dual-backend
+ * builds the backend drives async launch dispatch; in single-backend
+ * builds it is validated against the compiled-in backend. */
 uGDSError_t uGDSBufRegisterEx(const void* bufPtr_base, size_t length,
                                const uGDSBufConfig_t* config);
 
@@ -183,6 +207,11 @@ typedef struct uGDSDmabufExport {
     size_t    length;
 } uGDSDmabufExport_t;
 
+/* Export a dma-buf file descriptor for a registered buffer so it can
+ * be registered with an RDMA NIC via ibv_reg_dmabuf_mr().  'out->fd'
+ * is dup()'d -- the caller owns it and MUST close() it after use.
+ * Requires the buffer to have been registered with NVM_MAP_RDMA at
+ * uGDSBufRegister time. */
 uGDSError_t uGDSExportDmabuf(const void* bufPtr_base,
                               uGDSDmabufExport_t* out);
 
@@ -210,9 +239,17 @@ uGDSError_t uGDSRDMARegister(const void* bufPtr_base,
 uGDSError_t uGDSRDMAUnregister(const void* bufPtr_base,
                                 uGDSRDMARegion_t* region);
 
+/* Synchronous read from the namespace into a registered device buffer.
+ * 'bufPtr_base' must have been registered via uGDSBufRegister/
+ * uGDSBufRegisterEx (exact value); 'bufPtr_offset' is the byte offset
+ * inside that registration.  'size' must be a multiple of the namespace
+ * block size and bounded by the controller MDTS.  Returns the number of
+ * bytes read, or -errno on failure. */
 ssize_t uGDSRead(uGDSHandle_t fh, void* bufPtr_base, size_t size,
                    off_t file_offset, off_t bufPtr_offset);
 
+/* Synchronous write to the namespace from a registered device buffer.
+ * Argument and return conventions match uGDSRead. */
 ssize_t uGDSWrite(uGDSHandle_t fh, const void* bufPtr_base, size_t size,
                     off_t file_offset, off_t bufPtr_offset);
 
@@ -249,16 +286,36 @@ typedef struct uGDSIOEvents {
     ssize_t             ret;
 } uGDSIOEvents_t;
 
+/* Create a batch IO context bound to 'fh' with capacity for 'nr'
+ * entries.  Allocates the batch's private submission/completion
+ * resources and a dedicated QP (UGDS_BATCH_QUEUE_DEPTH).  The handle
+ * is pinned for the lifetime of the batch via an internal shared_ptr.
+ * Only one batch may be active per handle at a time; a second SetUp
+ * returns UGDS_BUSY. */
 uGDSError_t uGDSBatchIOSetUp(uGDSBatchHandle_t* batch, uGDSHandle_t fh,
                                unsigned nr);
 
+/* Submit up to 'nr' plain (single-buffer) IO entries.  Each iocb[k]
+ * describes a single devPtr_base/file_offset/size transfer.  Entries
+ * are appended to the batch ring; completions are reaped via
+ * uGDSBatchIOGetStatus.  Vectored entries may be mixed on the same
+ * batch via uGDSBatchIOSubmitv. */
 uGDSError_t uGDSBatchIOSubmit(uGDSBatchHandle_t batch, unsigned nr,
                                uGDSIOParams_t* iocb, unsigned flags);
 
+/* Reap completions.  Blocks until at least 'min_nr' entries have
+ * completed or 'timeout' elapses, then copies up to *nr events into
+ * 'events'.  On return *nr holds the number actually reaped (0 on
+ * timeout).  Events may be returned in any order. */
 uGDSError_t uGDSBatchIOGetStatus(uGDSBatchHandle_t batch, unsigned min_nr,
                                   unsigned* nr, uGDSIOEvents_t* events,
                                   struct timespec* timeout);
 
+/* Destroy the batch context.  Drains in-flight commands under a
+ * bounded timeout.  If the drain fails the handle is wedged and the
+ * batch transitions to WEDGED; the caller must reset the controller
+ * and then call uGDSHandleDeregisterEx with timeout_sec < -1 to force
+ * teardown. */
 void uGDSBatchIODestroy(uGDSBatchHandle_t batch);
 
 /* -- Vectored (scatter-gather) IO -- */
@@ -269,34 +326,56 @@ void uGDSBatchIODestroy(uGDSBatchHandle_t batch);
  * multiple of the controller page size (MPS).  'size' must be a
  * multiple of the namespace block size and non-zero.  offset + size
  * must not exceed the length passed at registration (the exact byte
- * length, not a page-rounded value). */
+ * length, not a page-rounded value).
+ *
+ * Refer to SGL design v7 section 2 for the segment model and section
+ * 5.1 (INV-LEN) / 5.3 (INV-AFFINITY) for the registration invariants
+ * enforced at acquire time. */
 typedef struct uGDSIoSegment {
-    void*   base;
-    off_t   offset;
-    size_t  size;
+    void*   base;     /* registered buffer base (exact registry key) */
+    off_t   offset;   /* byte offset inside base; must be MPS-aligned */
+    size_t  size;     /* transfer size in bytes; must be block-multiple */
 } uGDSIoSegment_t;
 
-#define UGDS_IOV_MAX        1024   /* sync/async: POSIX IOV_MAX parity */
-#define UGDS_BATCH_IOV_MAX  128    /* per batch entry (bounds arena) */
+/* Maximum number of segments per sync/async vectored call.
+ * Mirrors POSIX IOV_MAX so callers can reuse existing iov sizing. */
+#define UGDS_IOV_MAX        1024
 
-/* Vectored read/write.  Segments are consumed in array order:
- * segs[0] maps to [file_offset, file_offset + segs[0].size), etc.
- * Returns total bytes transferred, or -errno (same convention as
- * uGDSRead/uGDSWrite).  The segment array is fully consumed during
- * the call (synchronous); the caller may free/reuse it on return.
- * (Implementation in Phase 1.) */
+/* Maximum number of segments per vectored batch entry.  Bounds the
+ * arena allocation at uGDSBatchIOSetUp: capacity * UGDS_BATCH_IOV_MAX
+ * SegView slots are reserved once per batch object lifetime. */
+#define UGDS_BATCH_IOV_MAX  128
+
+/* Vectored read.  Segments are consumed in array order: segs[0] maps
+ * to [file_offset, file_offset + segs[0].size), segs[1] continues at
+ * file_offset + segs[0].size, and so on.  Returns total bytes read, or
+ * -errno (same convention as uGDSRead/uGDSWrite).
+ *
+ * The segment array is fully consumed during the call (synchronous);
+ * the caller may free/reuse it on return.
+ *
+ * Validation is performed up-front under g_driver.lock (INV-LEN exact-
+ * length bound, INV-AFFINITY controller match, MPS alignment of offset,
+ * block-multiple of size, overflow-safe total).  On timeout the handle
+ * is marked wedged and -EIO is returned; a controller reset is then
+ * required before the handle can be reused.
+ *
+ * Implemented in Phase 1 (SGL design v7 sections 1.2, 6.1, 8.1). */
 ssize_t uGDSReadv(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
                     unsigned nr_segs, off_t file_offset);
 
+/* Vectored write.  Layout and error conventions match uGDSReadv.
+ * Implemented in Phase 1 (SGL design v7 sections 1.2, 6.1, 8.1). */
 ssize_t uGDSWritev(uGDSHandle_t fh, const uGDSIoSegment_t* segs,
                      unsigned nr_segs, off_t file_offset);
 
 /* Vectored batch IO.  Because uGDSIOParams_t has no mode/union/reserved
  * field, SGL batch entries use this new params struct and submit function;
  * setup/status/destroy are shared with the existing batch object.
+ *
  * 'segs' is copied at submit, so the caller may free iocb and the arrays
- * on return -- parity with uGDSBatchIOSubmit.
- * (Implementation in Phase 2.) */
+ * on return -- parity with uGDSBatchIOSubmit.  Implemented in Phase 2
+ * (SGL design v7 section 6.2). */
 typedef struct uGDSIOSegParams {
     const uGDSIoSegment_t* segs;      /* copied at submit */
     unsigned               nr_segs;   /* <= UGDS_BATCH_IOV_MAX */
@@ -305,13 +384,19 @@ typedef struct uGDSIOSegParams {
     void*                  cookie;
 } uGDSIOSegParams_t;
 
-/* Same semantics as uGDSBatchIOSubmit: entries join the batch created
- * by uGDSBatchIOSetUp; completions are reaped via uGDSBatchIOGetStatus.
- * Plain and vectored submits may be mixed on the same batch handle. */
+/* Submit vectored (scatter-gather) batch entries.  Same semantics as
+ * uGDSBatchIOSubmit: entries join the batch created by uGDSBatchIOSetUp;
+ * completions are reaped via uGDSBatchIOGetStatus.  Plain and vectored
+ * submits may be mixed on the same batch handle.
+ *
+ * Per-entry validation follows the 8.1 value matrix and the analytic
+ * window counter (SGL design v7 section 4.2).  Preflight failures
+ * become terminal FAILED entries with -EINVAL and contribute zero
+ * commands to the work array.  Implemented in Phase 2 (section 6.2). */
 uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
                                  uGDSIOSegParams_t* iocb, unsigned flags);
 
-/* Vectored async IO on a CUDA/HIP stream.
+/* Vectored async read on a CUDA/HIP stream.
  * Binding contract (mirrors uGDSReadAsync late binding):
  *   - segs (the array pointer) and nr_segs are fixed at enqueue.
  *   - segs[i].base is read at enqueue (validation + in-flight refs)
@@ -319,11 +404,17 @@ uGDSError_t uGDSBatchIOSubmitv(uGDSBatchHandle_t batch, unsigned nr,
  *   - segs[i].offset, segs[i].size and *file_offset_p are read in the
  *     stream callback (late binding).  The segs array must remain
  *     valid until the callback runs.
- * (Implementation in Phase 3.) */
+ *
+ * *bytes_read_p is pre-zeroed at enqueue and written exactly once
+ * (either -errno on validation/launch failure, or the callback's
+ * result).  Implemented in Phase 3 (SGL design v7 section 6.3). */
 uGDSError_t uGDSReadvAsync(uGDSHandle_t fh, uGDSIoSegment_t* segs,
                              unsigned nr_segs, off_t* file_offset_p,
                              ssize_t* bytes_read_p, void* stream);
 
+/* Vectored async write on a CUDA/HIP stream.  Binding contract and
+ * lifecycle match uGDSReadvAsync.  Implemented in Phase 3 (SGL design
+ * v7 section 6.3). */
 uGDSError_t uGDSWritevAsync(uGDSHandle_t fh, uGDSIoSegment_t* segs,
                               unsigned nr_segs, off_t* file_offset_p,
                               ssize_t* bytes_written_p, void* stream);
